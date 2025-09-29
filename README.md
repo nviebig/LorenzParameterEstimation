@@ -1,5 +1,8 @@
 # LorenzParameterEstimation.jl
 
+
+
+
 A Julia package for parameter estimation in the Lorenz-63 chaotic dynamical system using automatic differentiation with Enzyme.jl. This package provides efficient tools for fitting Lorenz system parameters to observational data through gradient-based optimization and windowed training approaches.
 
 ## Features
@@ -159,13 +162,14 @@ The `examples/` directory contains comprehensive demonstrations:
 - `lorenz_training_evolution.gif`: Example training animation
 
 ## Mathematical Background
-
-The Lorenz-63 system is defined by:
+The Lorenz-63 system is governed by the following set of ordinary differential equations:
 
 ```math
-dx/dt = σ(y - x)
-dy/dt = x(ρ - z) - y  
-dz/dt = xy - βz
+\begin{aligned}
+\frac{dx}{dt} &= \sigma (y - x) \\
+\frac{dy}{dt} &= x(\rho - z) - y \\
+\frac{dz}{dt} &= xy - \beta z
+\end{aligned}
 ```
 
 Where:

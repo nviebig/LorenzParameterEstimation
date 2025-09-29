@@ -41,7 +41,8 @@ integrates forward for window_length steps, comparing to target.
 function compute_loss(
     params::L63Parameters{T},             # Parameters to evaluate
     target_solution::L63Solution{T},      # Target trajectory    
-    window_start::Int, window_length::Int # Number of integration steps
+    window_start::Int,                    # 1-based start index in target
+    window_length::Int                    # Window length, number of steps
     ) where {T}
     
     # Validate window bounds
