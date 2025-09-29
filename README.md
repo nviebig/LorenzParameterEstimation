@@ -1,7 +1,5 @@
 # LorenzParameterEstimation.jl
 
-[![Build Status](https://github.com/nviebig/LorenzParameterEstimation.jl/workflows/CI/badge.svg)](https://github.com/nviebig/LorenzParameterEstimation.jl/actions)
-
 A Julia package for parameter estimation in the Lorenz-63 chaotic dynamical system using automatic differentiation with Enzyme.jl. This package provides efficient tools for fitting Lorenz system parameters to observational data through gradient-based optimization and windowed training approaches.
 
 ## Features
