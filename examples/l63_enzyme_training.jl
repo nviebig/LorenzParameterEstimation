@@ -9,11 +9,11 @@ using LinearAlgebra
 using Printf
 
 # Visualization dependencies
-const _HAS_PLOTS = try
-    using Plots, Images, FileIO
+const _HAS_MAKIE = try
+    using GLMakie
     true
 catch
-    @warn "Plots/Images/FileIO not available. Visualization calls will error."
+    @warn "GLMakie not available. Visualization calls will error."
     false
 end
 
@@ -27,8 +27,8 @@ catch
     using LorenzParameterEstimation
 end
 
-# Optionally include visualization extension if Plots is available
-if _HAS_PLOTS
+# Optionally include visualization extension if GLMakie is available
+if _HAS_MAKIE
     try
         include(joinpath(@__DIR__, "..", "ext", "LorenzVisualizationExt.jl"))
     catch
@@ -59,22 +59,26 @@ println("Original setup (ρ=15.0) final state: ", sol_stable.final_state)
 println("High ρ (ρ=35.0) final state: ", sol_highρ.final_state)
 println("Low ρ (ρ=8.0) final state: ", sol_lowρ.final_state)
 
-if _HAS_PLOTS
-    # 3D comparisons similar to the original script
-    kwargs3d = (; legend=false, linewidth=0.5, seriestype=:path3d)
-    p1 = plot(sol_classic.u[:, 1], sol_classic.u[:, 2], sol_classic.u[:, 3];
-              title="Classic Lorenz (ρ=28.0)", xlabel="X", ylabel="Y", zlabel="Z",
-              linecolor=:blue, kwargs3d...)
-    p2 = plot(sol_stable.u[:, 1], sol_stable.u[:, 2], sol_stable.u[:, 3];
-              title="Original (ρ=15.0)", xlabel="X", ylabel="Y", zlabel="Z",
-              linecolor=:red, kwargs3d...)
-    p3 = plot(sol_highρ.u[:, 1], sol_highρ.u[:, 2], sol_highρ.u[:, 3];
-              title="High ρ (ρ=35.0)", xlabel="X", ylabel="Y", zlabel="Z",
-              linecolor=:green, kwargs3d...)
-    p4 = plot(sol_lowρ.u[:, 1], sol_lowρ.u[:, 2], sol_lowρ.u[:, 3];
-              title="Low ρ (ρ=8.0)", xlabel="X", ylabel="Y", zlabel="Z",
-              linecolor=:purple, kwargs3d...)
-    plot(p1, p2, p3, p4, layout=(2,2), size=(900,650))
+if _HAS_MAKIE
+    GLMakie.activate!()
+    fig = Figure(resolution=(900, 650))
+    axes = (
+        Axis3(fig[1, 1]; title="Classic Lorenz (ρ=28.0)", xlabel="X", ylabel="Y", zlabel="Z"),
+        Axis3(fig[1, 2]; title="Original (ρ=15.0)", xlabel="X", ylabel="Y", zlabel="Z"),
+        Axis3(fig[2, 1]; title="High ρ (ρ=35.0)", xlabel="X", ylabel="Y", zlabel="Z"),
+        Axis3(fig[2, 2]; title="Low ρ (ρ=8.0)", xlabel="X", ylabel="Y", zlabel="Z")
+    )
+    colors = (
+        RGBAf0(31 / 255, 119 / 255, 180 / 255, 0.9),
+        RGBAf0(214 / 255, 39 / 255, 40 / 255, 0.9),
+        RGBAf0(44 / 255, 160 / 255, 44 / 255, 0.9),
+        RGBAf0(148 / 255, 103 / 255, 189 / 255, 0.9)
+    )
+    for (ax, sol, color) in zip(axes, (sol_classic, sol_stable, sol_highρ, sol_lowρ), colors)
+        lines!(ax, sol.u[:, 1], sol.u[:, 2], sol.u[:, 3]; color=color, linewidth=1.5)
+        tightlimits!(ax)
+    end
+    display(fig)
 end
 
 println("\n================ Sanity Checks ================")
@@ -204,50 +208,56 @@ println("\n================ Parameter Estimation Results ================")
 # Generate fitted trajectory for comparison
 fitted_sol = integrate(best_params_demo, x0_demo, (0.0, T_demo), dt_demo)
 
-if _HAS_PLOTS
-    # Component-wise comparison
-    p1 = plot(true_sol_demo.t, true_sol_demo.u[:,1], label="True (ρ=28.0)", linewidth=1, alpha=0.8)
-    plot!(p1, fitted_sol.t, fitted_sol.u[:,1], label="Fitted (ρ=$(round(best_params_demo.ρ, digits=3)))",
-          linewidth=1, alpha=0.8, linestyle=:dash)
-    xlabel!(p1, "Time"); ylabel!(p1, "X"); title!(p1, "X Component")
+if _HAS_MAKIE
+    GLMakie.activate!()
+    time = true_sol_demo.t
+    fitted_time = fitted_sol.t
 
-    p2 = plot(true_sol_demo.t, true_sol_demo.u[:,2], label="True (ρ=28.0)", linewidth=1, alpha=0.8)
-    plot!(p2, fitted_sol.t, fitted_sol.u[:,2], label="Fitted (ρ=$(round(best_params_demo.ρ, digits=3)))",
-          linewidth=1, alpha=0.8, linestyle=:dash)
-    xlabel!(p2, "Time"); ylabel!(p2, "Y"); title!(p2, "Y Component")
+    fig_components = Figure(resolution=(1000, 700))
+    labels = ("X", "Y", "Z")
+    colors_true = (
+        RGBAf0(31 / 255, 119 / 255, 180 / 255, 0.9),
+        RGBAf0(214 / 255, 39 / 255, 40 / 255, 0.9),
+        RGBAf0(44 / 255, 160 / 255, 44 / 255, 0.9)
+    )
+    colors_fit = (
+        RGBAf0(31 / 255, 119 / 255, 180 / 255, 0.6),
+        RGBAf0(214 / 255, 39 / 255, 40 / 255, 0.6),
+        RGBAf0(44 / 255, 160 / 255, 44 / 255, 0.6)
+    )
 
-    p3 = plot(true_sol_demo.t, true_sol_demo.u[:,3], label="True (ρ=28.0)", linewidth=1, alpha=0.8)
-    plot!(p3, fitted_sol.t, fitted_sol.u[:,3], label="Fitted (ρ=$(round(best_params_demo.ρ, digits=3)))",
-          linewidth=1, alpha=0.8, linestyle=:dash)
-    xlabel!(p3, "Time"); ylabel!(p3, "Z"); title!(p3, "Z Component")
+    for i in 1:3
+        ax = Axis(fig_components[(i + 1) ÷ 2, ((i + 1) % 2) + 1];
+            xlabel="Time", ylabel=labels[i], title="$(labels[i]) Component")
+        lines!(ax, time, true_sol_demo.u[:, i]; color=colors_true[i], linewidth=1.5, label="True")
+        lines!(ax, fitted_time, fitted_sol.u[:, i]; color=colors_fit[i], linewidth=1.5, linestyle=:dash, label="Fitted")
+        axislegend(ax, position=:rt)
+        tightlimits!(ax)
+    end
 
-    # Loss convergence plot
-    p4 = plot(1:length(loss_hist_demo), loss_hist_demo, linewidth=2, color=:red,
-              xlabel="Epoch", ylabel="RMSE Loss", title="Training Loss Convergence",
-              legend=false, yscale=:log10)
+    ax_loss = Axis(fig_components[2, 2]; xlabel="Epoch", ylabel="RMSE Loss (log10)", title="Training Loss Convergence")
+    epochs = collect(1:length(loss_hist_demo))
+    lines!(ax_loss, epochs, log10.(loss_hist_demo .+ eps(Float64)); color=RGBAf0(255 / 255, 127 / 255, 14 / 255, 0.9), linewidth=2)
+    tightlimits!(ax_loss)
+    display(fig_components)
 
-    plot(p1, p2, p3, p4, layout=(2,2), size=(1000,700))
+    fig_phase = Figure(resolution=(1200, 400))
+    ax_true = Axis3(fig_phase[1, 1]; title="True Lorenz (ρ=28.0)", xlabel="X", ylabel="Y", zlabel="Z")
+    ax_fit = Axis3(fig_phase[1, 2]; title="Fitted Lorenz (ρ=$(round(best_params_demo.ρ, digits=3)))", xlabel="X", ylabel="Y", zlabel="Z")
+    ax_overlay = Axis(fig_phase[1, 3]; title="Lorenz Attractors Overlay (XY)", xlabel="X", ylabel="Y")
 
-    # 3D Lorenz attractor comparison
-    p_true = plot(true_sol_demo.u[:, 1], true_sol_demo.u[:, 2], true_sol_demo.u[:, 3];
-                  title="True Lorenz (ρ=28.0)", legend=false, linewidth=0.5,
-                  seriestype=:path3d, linecolor=:blue, xlabel="X", ylabel="Y", zlabel="Z")
-    p_fitted = plot(fitted_sol.u[:, 1], fitted_sol.u[:, 2], fitted_sol.u[:, 3];
-                    title="Fitted Lorenz (ρ=$(round(best_params_demo.ρ, digits=3)))",
-                    legend=false, linewidth=0.5, seriestype=:path3d,
-                    linecolor=:red, xlabel="X", ylabel="Y", zlabel="Z")
+    lines!(ax_true, true_sol_demo.u[:, 1], true_sol_demo.u[:, 2], true_sol_demo.u[:, 3]; color=colors_true[1], linewidth=1.0)
+    tightlimits!(ax_true)
+    lines!(ax_fit, fitted_sol.u[:, 1], fitted_sol.u[:, 2], fitted_sol.u[:, 3]; color=colors_fit[1], linewidth=1.0)
+    tightlimits!(ax_fit)
 
-    # Overlay comparison in XY plane for clarity
-    p_overlay = plot(true_sol_demo.u[:,1], true_sol_demo.u[:,2], label="True (ρ=28.0)",
-                     linecolor=:blue, linewidth=0.5, alpha=0.7)
-    plot!(p_overlay, fitted_sol.u[:,1], fitted_sol.u[:,2], label="Fitted (ρ=$(round(best_params_demo.ρ, digits=3)))",
-          linecolor=:red, linewidth=0.5, alpha=0.7)
-    title!(p_overlay, "Lorenz Attractors Overlay (XY)")
-    xlabel!(p_overlay, "X"); ylabel!(p_overlay, "Y")
+    lines!(ax_overlay, true_sol_demo.u[:, 1], true_sol_demo.u[:, 2]; color=colors_true[1], linewidth=1.0, label="True")
+    lines!(ax_overlay, fitted_sol.u[:, 1], fitted_sol.u[:, 2]; color=colors_fit[1], linewidth=1.0, linestyle=:dash, label="Fitted")
+    axislegend(ax_overlay, position=:rt)
+    tightlimits!(ax_overlay)
+    display(fig_phase)
 
-    plot(p_true, p_fitted, p_overlay, layout=(1,3), size=(1200,400))
-
-    # Optional animation (requires GR/FFMPEG via Plots and the visualization extension)
+    # Optional animation using the Makie-based visualization extension
     try
         gif_path = joinpath(@__DIR__, "lorenz_training_evolution.gif")
         gif_file = LorenzParameterEstimation.create_training_gif(
