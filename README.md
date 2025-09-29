@@ -7,12 +7,12 @@ A Julia package for parameter estimation in the Lorenz-63 chaotic dynamical syst
 
 ## Features
 
-🔬 **Parameter Estimation**: Recover Lorenz-63 parameters (σ, ρ, β) from trajectory data
-⚡ **Enzyme Integration**: Fast automatic differentiation using Enzyme.jl for gradient computation
-🎯 **Windowed Training**: Teacher-forcing approach with short windows for stable training in chaotic systems
-📊 **Comprehensive Visualization**: Built-in plotting and animation capabilities
-🧪 **Robust Integration**: 4th-order Runge-Kutta integration optimized for AD compatibility
-📈 **Training Diagnostics**: Loss tracking, gradient monitoring, and convergence analysis
+- 🔬 **Parameter Estimation**: Recover Lorenz-63 parameters (σ, ρ, β) from trajectory data
+- ⚡ **Enzyme Integration**: Fast automatic differentiation using Enzyme.jl for efficient gradient computation
+- 🎯 **Windowed Training**: Teacher-forcing with short integration windows for stable optimization in chaotic regimes
+- 📊 **Comprehensive Visualization**: Built-in plotting and animation tools for trajectory and training diagnostics
+- 🧪 **Robust Integration**: 4th-order Runge-Kutta method optimized for automatic differentiation compatibility
+- 📈 **Training Diagnostics**: Track loss, monitor gradients, and analyze convergence during parameter estimation
 
 ## Installation
 
