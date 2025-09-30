@@ -1,5 +1,74 @@
 # ================================ Utilities ================================
 
+# ================================ Array Backend Utilities ================================
+
+"""
+    similar_array(template::AbstractArray, ::Type{T}, dims...)
+
+Create an array of type T with the same backend as the template array.
+This ensures GPU/CPU compatibility by inferring the array type from existing arrays.
+"""
+similar_array(template::AbstractArray, ::Type{T}, dims...) where {T} = similar(template, T, dims...)
+
+"""
+    zeros_like(template::AbstractArray, ::Type{T}, dims...)
+
+Create a zero-filled array of type T with the same backend as the template array.
+"""
+function zeros_like(template::AbstractArray, ::Type{T}, dims...) where {T}
+    arr = similar(template, T, dims...)
+    fill!(arr, zero(T))
+    return arr
+end
+
+"""
+    ones_like(template::AbstractArray, ::Type{T}, dims...)
+
+Create a ones-filled array of type T with the same backend as the template array.
+"""
+function ones_like(template::AbstractArray, ::Type{T}, dims...) where {T}
+    arr = similar(template, T, dims...)
+    fill!(arr, one(T))
+    return arr
+end
+
+"""
+    adapt_array_type(target::AbstractArray, source::AbstractArray)
+
+Convert source array to have the same backend type as target array.
+"""
+function adapt_array_type(target::AbstractArray, source::AbstractArray)
+    # If they're already the same type, return source
+    typeof(target) == typeof(source) && return source
+    
+    # Create a new array with the same backend as target
+    result = similar(target, eltype(source), size(source))
+    result .= source
+    return result
+end
+
+"""
+    infer_array_type(arrays::AbstractArray...)
+
+Infer the common array backend type from multiple arrays.
+Returns the type of the first non-Vector array, or Vector if all are Vector.
+"""
+function infer_array_type(arrays::AbstractArray...)
+    isempty(arrays) && return Vector
+    
+    # Find the first array that's not a plain Vector/Matrix
+    for arr in arrays
+        if !(arr isa Vector || arr isa Matrix)
+            return typeof(arr)
+        end
+    end
+    
+    # If all are plain arrays, return the type of the first one
+    return typeof(first(arrays))
+end
+
+# ================================ Parameter and System Utilities ================================
+
 """
     classic_params(T=Float64)
 
@@ -74,9 +143,12 @@ Add Gaussian noise to a clean trajectory to simulate observations.
 """
 function generate_noisy_observations(solution::L63Solution{T}, noise_level::Real) where {T}
     σ_noise = T(noise_level)
-    noisy_trajectory = solution.u + σ_noise * randn(T, size(solution.u))
+    # Generate noise with the same array backend as the trajectory
+    noise = similar_array(solution.u, T, size(solution.u))
+    randn!(noise)
+    noisy_trajectory = solution.u + σ_noise * noise
     
-    return L63Solution{T}(solution.t, noisy_trajectory, solution.system)
+    return L63Solution(solution.t, noisy_trajectory, solution.system)
 end
 
 """
@@ -91,24 +163,24 @@ function validation_split(solution::L63Solution{T}, train_fraction::Real=0.8) wh
     # Training set
     train_t = solution.t[1:n_train]
     train_u = solution.u[1:n_train, :]
-    train_system = L63System{T}(
-        solution.system.params,
-        solution.system.u0, 
-        (solution.t[1], solution.t[n_train]),
-        solution.system.dt
+    train_system = L63System(
+        params=solution.system.params,
+        u0=solution.system.u0, 
+        tspan=(solution.t[1], solution.t[n_train]),
+        dt=solution.system.dt
     )
-    train_solution = L63Solution{T}(train_t, train_u, train_system)
+    train_solution = L63Solution(train_t, train_u, train_system)
     
     # Validation set  
     val_t = solution.t[n_train+1:end]
     val_u = solution.u[n_train+1:end, :]
-    val_system = L63System{T}(
-        solution.system.params,
-        solution.u[n_train+1, :],  # New initial condition
-        (solution.t[n_train+1], solution.t[end]),
-        solution.system.dt
+    val_system = L63System(
+        params=solution.system.params,
+        u0=solution.u[n_train+1, :],  # New initial condition
+        tspan=(solution.t[n_train+1], solution.t[end]),
+        dt=solution.system.dt
     )
-    val_solution = L63Solution{T}(val_t, val_u, val_system)
+    val_solution = L63Solution(val_t, val_u, val_system)
     
     return train_solution, val_solution
 end

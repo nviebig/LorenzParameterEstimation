@@ -51,7 +51,7 @@ Complete specification of a Lorenz-63 system including parameters and initial co
 
 # Fields
 - `params::L63Parameters{T}`: System parameters
-- `u0::Vector{T}`: Initial conditions [x, y, z]
+- `u0::AbstractVector{T}`: Initial conditions [x, y, z]
 - `tspan::Tuple{T,T}`: Time span (t0, tf)
 - `dt::T`: Time step size
 
@@ -65,26 +65,29 @@ sys = L63System(
 )
 ```
 """
-struct L63System{T<:Real}
+struct L63System{T<:Real,V<:AbstractVector{T}}
     params::L63Parameters{T}
-    u0::Vector{T}
+    u0::V
     tspan::Tuple{T,T}
     dt::T
     
-    function L63System{T}(params::L63Parameters{T}, u0::Vector{T}, tspan::Tuple{T,T}, dt::T) where {T<:Real}
+    function L63System{T,V}(params::L63Parameters{T}, u0::V, tspan::Tuple{T,T}, dt::T) where {T<:Real,V<:AbstractVector{T}}
         length(u0) == 3 || throw(ArgumentError("Initial condition must be 3-dimensional"))
         tspan[2] > tspan[1] || throw(ArgumentError("Final time must be greater than initial time"))
         dt > 0 || throw(ArgumentError("Time step must be positive"))
-        new{T}(params, u0, tspan, dt)
+        new{T,V}(params, u0, tspan, dt)
     end
 end
 
 # Outer constructor with keyword arguments
-function L63System(; params::L63Parameters{T}, u0::Vector{S}, tspan::Tuple{U,V}, dt::W) where {T,S,U,V,W}
+function L63System(; params::L63Parameters{T}, u0::AbstractVector{S}, tspan::Tuple{U,V}, dt::W) where {T,S,U,V,W}
     R = promote_type(T, S, U, V, W)
-    L63System{R}(
+    # Convert u0 to the promoted type while preserving array type
+    u0_converted = similar(u0, R)
+    u0_converted .= R.(u0)
+    L63System{R,typeof(u0_converted)}(
         L63Parameters{R}(R(params.σ), R(params.ρ), R(params.β)),
-        Vector{R}(u0),
+        u0_converted,
         (R(tspan[1]), R(tspan[2])),
         R(dt)
     )
@@ -96,25 +99,33 @@ end
 Solution of a Lorenz-63 integration containing trajectory data and metadata.
 
 # Fields
-- `t::Vector{T}`: Time points
-- `u::Matrix{T}`: State trajectory (N×3 matrix)
-- `system::L63System{T}`: Original system specification
-- `final_state::Vector{T}`: Final state
+- `t::AbstractVector{T}`: Time points
+- `u::AbstractMatrix{T}`: State trajectory (N×3 matrix)
+- `system::L63System{T,V}`: Original system specification
+- `final_state::AbstractVector{T}`: Final state
 - `success::Bool`: Integration success flag
 """
-struct L63Solution{T<:Real}
-    t::Vector{T}
-    u::Matrix{T}  # N×3 trajectory matrix
-    system::L63System{T}
-    final_state::Vector{T}
+struct L63Solution{T<:Real,V<:AbstractVector{T},M<:AbstractMatrix{T},S}
+    t::V
+    u::M  # N×3 trajectory matrix
+    system::S
+    final_state::V
     success::Bool
     
-    function L63Solution{T}(t::Vector{T}, u::Matrix{T}, system::L63System{T}) where {T<:Real}
+    function L63Solution{T,V,M,S}(t::V, u::M, system::S) where {T<:Real,V<:AbstractVector{T},M<:AbstractMatrix{T},S}
         size(u, 2) == 3 || throw(ArgumentError("Trajectory must have 3 spatial dimensions"))
         length(t) == size(u, 1) || throw(ArgumentError("Time and trajectory dimensions must match"))
-        final_state = size(u, 1) > 0 ? u[end, :] : zeros(T, 3)
-        new{T}(t, u, system, final_state, true)
+        final_state = size(u, 1) > 0 ? u[end, :] : similar(t, 3)
+        if size(u, 1) == 0
+            fill!(final_state, zero(T))
+        end
+        new{T,V,M,S}(t, u, system, final_state, true)
     end
+end
+
+# Convenience constructor
+function L63Solution(t::V, u::M, system::S) where {T,V<:AbstractVector{T},M<:AbstractMatrix{T},S}
+    L63Solution{T,V,M,S}(t, u, system)
 end
 
 # Convenience accessors
