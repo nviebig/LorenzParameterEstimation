@@ -1,6 +1,99 @@
 # ================================ Loss Functions ================================
 
-using Enzyme
+using Statistics: mean
+using Enzyme  # For compute_gradients() function
+
+# NOTE: This file uses Enzyme.jl for precise gradient computation.
+# All loss functions work with the modular_train!() function,
+# while compute_gradients() is used by both train!() and modular_train!() functions.
+
+"""
+    window_rmse(predicted, target)
+
+RMSE loss for trajectory windows. Uses Flux's mse under the hood.
+"""
+function window_rmse(predicted::AbstractMatrix, target::AbstractMatrix)
+    mse_val = mean((predicted .- target).^2)
+    return sqrt(mse_val)
+end
+
+"""
+    window_mae(predicted, target) 
+
+MAE loss for trajectory windows. Uses Flux's mae.
+"""
+function window_mae(predicted, target)
+    return mean(abs.(predicted .- target))
+end
+
+"""
+    window_mse(predicted, target)
+
+MSE loss for trajectory windows. Direct Flux mse.
+"""
+function window_mse(predicted, target)
+    return mean((predicted .- target).^2)
+end
+
+"""
+    weighted_window_loss(base_loss_fn, weight_exponent=1.0)
+
+Returns a weighted loss function that emphasizes later time steps.
+Uses any base loss function (e.g., mse, mae, window_rmse).
+
+# Example
+```julia
+loss_fn = weighted_window_loss(window_rmse, 1.5)
+loss_value = loss_fn(predicted, target)
+```
+"""
+function weighted_window_loss(base_loss_fn, weight_exponent::Real = 1.0)
+    return function(predicted::AbstractMatrix, target::AbstractMatrix)
+        window_length = size(predicted, 1)
+        
+        # Create exponential weights: later time steps get higher weight
+        weights = [(i / window_length)^weight_exponent for i in 1:window_length]
+        weights ./= sum(weights)  # Normalize
+        
+        total_loss = 0.0
+        for i in 1:window_length
+            window_pred = reshape(predicted[i, :], 1, :)
+            window_target = reshape(target[i, :], 1, :)
+            loss_val = base_loss_fn(window_pred, window_target)
+            total_loss += weights[i] * loss_val
+        end
+        
+        return total_loss
+    end
+end
+
+"""
+    probabilistic_loss(predicted, target; noise_std=0.1)
+
+Negative log-likelihood loss assuming Gaussian noise.
+Useful for Bayesian approaches.
+"""
+function probabilistic_loss(predicted::AbstractMatrix, target::AbstractMatrix; noise_std::Real = 0.1)
+    diff = predicted .- target
+    # Negative log-likelihood for Gaussian noise
+    nll = 0.5 * sum(diff.^2) / (noise_std^2) + 0.5 * length(diff) * log(2π * noise_std^2)
+    return nll
+end
+
+"""
+    adaptive_loss(predicted, target; β=0.5)
+
+Adaptive loss that interpolates between L1 and L2 based on residual magnitude.
+Robust to outliers while maintaining efficiency.
+"""
+function adaptive_loss(predicted::AbstractMatrix, target::AbstractMatrix; β::Real = 0.5)
+    residuals = abs.(predicted .- target)
+    # Smooth L1 loss (Huber-like)
+    mask = residuals .< β
+    loss = sum(mask .* (0.5 .* residuals.^2 ./ β) .+ 
+               (.!mask) .* (residuals .- 0.5 * β))
+    return loss / length(residuals)
+end
 
 """
     compute_loss(params::L63Parameters, target_solution::L63Solution, window_start::Int, window_length::Int)

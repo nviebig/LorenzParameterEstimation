@@ -12,7 +12,7 @@ Compute the right-hand side of the Lorenz-63 system.
 # Returns
 - `du`: Time derivatives [dx/dt, dy/dt, dz/dt]
 """
-@inline function lorenz_rhs(u, params::L63Parameters{T}) where {T}
+function lorenz_rhs(u, params::L63Parameters{T}) where {T}
     x, y, z = u[1], u[2], u[3]
     dx = params.σ * (y - x)
     dy = x * (params.ρ - z) - y 

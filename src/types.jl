@@ -1,5 +1,8 @@
 # ================================ Core Types ================================
 
+import Optimisers
+import Random
+
 """
     L63Parameters{T<:Real}
 
@@ -24,6 +27,7 @@ struct L63Parameters{T<:Real}
     ρ::T  # Rayleigh number  
     β::T  # Geometric parameter
 end
+
 
 # Constructor with keyword arguments
 L63Parameters(; σ::T, ρ::T, β::T) where {T<:Real} = L63Parameters{T}(σ, ρ, β)
@@ -131,21 +135,48 @@ Configuration for parameter estimation training.
 - `update_mask::NamedTuple`: Which parameters to update (σ=true/false, ρ=true/false, β=true/false)
 - `verbose::Bool`: Print training progress
 """
-struct L63TrainingConfig{T<:Real}
+struct L63TrainingConfig{T<:Real,O,F,R<:Random.AbstractRNG}
     epochs::Int
     η::T
     window_size::Int
+    stride::Int
     clip_norm::T
     update_mask::NamedTuple{(:σ, :ρ, :β), Tuple{Bool, Bool, Bool}}
     verbose::Bool
+    batch_size::Int
+    optimiser::O
+    loss::F
+    train_fraction::Float64
+    shuffle::Bool
+    rng::R
+    eval_every::Int
     
-    function L63TrainingConfig{T}(epochs::Int, η::T, window_size::Int, clip_norm::T, 
-                                  update_mask::NamedTuple, verbose::Bool) where {T<:Real}
+    function L63TrainingConfig{T,O,F,R}(
+        epochs::Int,
+        η::T,
+        window_size::Int,
+        stride::Int,
+        clip_norm::T,
+        update_mask::NamedTuple{(:σ, :ρ, :β), Tuple{Bool, Bool, Bool}},
+        verbose::Bool,
+        batch_size::Int,
+        optimiser::O,
+        loss::F,
+        train_fraction::Float64,
+        shuffle::Bool,
+        rng::R,
+        eval_every::Int
+    ) where {T<:Real,O,F,R<:Random.AbstractRNG}
         epochs > 0 || throw(ArgumentError("Number of epochs must be positive"))
         η > 0 || throw(ArgumentError("Learning rate must be positive"))
         window_size > 0 || throw(ArgumentError("Window size must be positive"))
+        stride > 0 || throw(ArgumentError("Stride must be positive"))
         clip_norm > 0 || throw(ArgumentError("Clip norm must be positive"))
-        new{T}(epochs, η, window_size, clip_norm, update_mask, verbose)
+        batch_size > 0 || throw(ArgumentError("Batch size must be positive"))
+        0 < train_fraction <= 1 || throw(ArgumentError("Train fraction must be in (0, 1]"))
+        eval_every > 0 || throw(ArgumentError("Evaluation interval must be positive"))
+        new{T,O,F,R}(epochs, η, window_size, stride, clip_norm, update_mask, verbose,
+                     batch_size, optimiser, loss, train_fraction, shuffle, rng, eval_every)
     end
 end
 
@@ -154,13 +185,46 @@ function L63TrainingConfig(;
     epochs::Int = 100,
     η::Real = 5e-3, 
     window_size::Int = 300,
+    stride::Union{Nothing, Int} = nothing,
     clip_norm::Real = 5.0,
+    batch_size::Int = 16,
+    optimiser = nothing,
+    loss = nothing,
+    train_fraction::Real = 0.8,
+    shuffle::Bool = true,
+    rng::Union{Nothing, Random.AbstractRNG} = nothing,
+    eval_every::Int = 1,
     update_σ::Bool = true,
     update_ρ::Bool = true, 
     update_β::Bool = true,
     verbose::Bool = true
 )
     T = promote_type(typeof.((η, clip_norm))...)
+    stride_val = isnothing(stride) ? window_size : stride
+    stride_val > 0 || throw(ArgumentError("Stride must be positive"))
     update_mask = (σ=update_σ, ρ=update_ρ, β=update_β)
-    L63TrainingConfig{T}(epochs, T(η), window_size, T(clip_norm), update_mask, verbose)
+    rng_val = isnothing(rng) ? Random.default_rng() : rng
+    opt = isnothing(optimiser) ? Optimisers.OptimiserChain(
+        Optimisers.ClipNorm(T(clip_norm)),
+        Optimisers.Descent(T(η))
+    ) : optimiser
+    train_fraction_val = Float64(train_fraction)
+    loss_fn = loss
+
+    return L63TrainingConfig{T, typeof(opt), typeof(loss_fn), typeof(rng_val)}(
+        epochs,
+        T(η),
+        window_size,
+        stride_val,
+        T(clip_norm),
+        update_mask,
+        verbose,
+        batch_size,
+        opt,
+        loss_fn,
+        train_fraction_val,
+        shuffle,
+        rng_val,
+        eval_every
+    )
 end
