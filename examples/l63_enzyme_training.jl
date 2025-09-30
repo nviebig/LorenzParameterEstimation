@@ -137,7 +137,7 @@ initial_guess = L63Parameters(10.0, 20.0, 8.0/3.0)
 
 # Training config — match the earlier structure
 config = L63TrainingConfig(
-    epochs=30,             
+    epochs=30,
     η=1e-2,
     window_size=200,
     clip_norm=5.0,
@@ -178,12 +178,12 @@ true_sol_demo = integrate(true_params, x0_demo, (0.0, T_demo), dt_demo)
 # Start from poor ρ and only update ρ
 guess_params = L63Parameters(10.0, 15.0, 8.0/3.0)
 cfg = L63TrainingConfig(
-    epochs=120,             # More epochs for better convergence
-    η=1e-2,                 # Learning rate
-    window_size=400,        # Longer windows for stability
-    clip_norm=5.0,          # Gradient clipping norm
-    update_σ=false,         
-    update_ρ=true,          
+    epochs=120,
+    η=1e-2,
+    window_size=400,
+    clip_norm=5.0,
+    update_σ=false,
+    update_ρ=true,
     update_β=false,
     verbose=true
 )
