@@ -69,9 +69,10 @@ end
 Helper function for simulating Lorenz trajectory in Turing model.
 Must be compatible with automatic differentiation.
 """
-function _simulate_window_turing(params::L63Parameters, u0::Vector, window_size::Int, dt::Real)
-    trajectory = Matrix{eltype(u0)}(undef, window_size, 3)
-    state = copy(u0)
+function _simulate_window_turing(params::L63Parameters, u0::AbstractVector, window_size::Int, dt::Real)
+    trajectory = similar_array(u0, eltype(u0), window_size, 3)
+    state = similar(u0)
+    state .= u0
     
     for i in 1:window_size
         state = rk4_step(state, params, dt)
@@ -272,7 +273,8 @@ function posterior_predictive_check(
     n_chain_samples = length(chains[:σ])
     sample_indices = rand(1:n_chain_samples, n_samples)
     
-    predicted_trajectories = Vector{Matrix{T}}(undef, n_samples)
+    predicted_trajectories = Matrix{T}[]
+    sizehint!(predicted_trajectories, n_samples)
     
     println("🔮 Performing posterior predictive checks")
     println("   Using $n_samples posterior samples")
@@ -291,10 +293,11 @@ function posterior_predictive_check(
         
         try
             sol = integrate(params_sample, u0, tspan, target_solution.system.dt)
-            predicted_trajectories[i] = sol.u
+            push!(predicted_trajectories, sol.u)
         catch
             # If integration fails, use NaN trajectory
-            predicted_trajectories[i] = fill(T(NaN), prediction_length, 3)
+            nan_traj = fill(T(NaN), prediction_length, 3)
+            push!(predicted_trajectories, nan_traj)
         end
     end
     

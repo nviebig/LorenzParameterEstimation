@@ -142,7 +142,8 @@ function compute_loss(
     (1 <= window_start <= max_start) || throw(BoundsError("Invalid window bounds"))
     
     # Teacher forcing: start from observed state
-    u = copy(target_solution[window_start])
+    u = similar(target_solution.u0)
+    u .= target_solution[window_start]
     dt = target_solution.system.dt
     
     # Accumulate squared errors
@@ -174,14 +175,15 @@ Enzyme-compatible wrapper for loss computation with scalar parameters.
     σ::T,                           # Parameter σ
     ρ::T,                           # Parameter ρ
     β::T,                           # Parameter β
-    u0::Vector{T},                  # Initial state (3-vector)
-    target_trajectory::Matrix{T},   # Target trajectory (N×3 matrix)
+    u0::AbstractVector{T},          # Initial state (3-vector)
+    target_trajectory::AbstractMatrix{T},   # Target trajectory (N×3 matrix)
     window_length::Int,             # Number of integration steps
     dt::T
     ) where {T}
     
     params = L63Parameters{T}(σ, ρ, β) # Construct parameters
-    u = copy(u0) # Initial state
+    u = similar(u0) # Initial state with same backend
+    u .= u0
     
     se = zero(T) # Squared error accumulator
     count = 0    # Count of comparisons
@@ -218,10 +220,11 @@ function compute_gradients(params::L63Parameters{T}, target_solution::L63Solutio
     target_window = target_solution.u[window_start:window_end, :]
     dt = target_solution.system.dt
     
-    # Convert to compatible types
+    # Convert to compatible types (may need to be CPU arrays for Enzyme)
     σ0, ρ0, β0 = T(params.σ), T(params.ρ), T(params.β)
-    u0_vec = Vector{T}(u0)
-    target_mat = Matrix{T}(target_window)
+    # Convert to CPU arrays if needed for Enzyme compatibility
+    u0_vec = u0 isa Vector ? u0 : Vector{T}(u0)
+    target_mat = target_window isa Matrix ? target_window : Matrix{T}(target_window)
     
     # Compute gradients using Enzyme
     grads = Enzyme.autodiff(

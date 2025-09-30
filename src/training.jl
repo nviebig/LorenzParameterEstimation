@@ -122,7 +122,7 @@ function modular_train!(
     update_mask = (σ = update_σ, ρ = update_ρ, β = update_β)
     
     # Training state
-    metrics_history = Vector{NamedTuple}(undef, 0)
+    metrics_history = NamedTuple[]
     param_history = L63Parameters{T}[params]
     best_params = params
     best_metric = convert(T, Inf)
@@ -321,9 +321,11 @@ function train!(
     opt_state = Optimisers.setup(config.optimiser, ps)
     
     # Initialize tracking
-    metrics_history = Vector{NamedTuple{(:train, :validation), Tuple{T, Union{Missing, T}}}}(undef, config.epochs)
-    param_history = Vector{L63Parameters{T}}(undef, config.epochs + 1)
-    param_history[1] = params
+    metrics_history = NamedTuple{(:train, :validation), Tuple{T, Union{Missing, T}}}[]
+    param_history = L63Parameters{T}[]
+    sizehint!(metrics_history, config.epochs)
+    sizehint!(param_history, config.epochs + 1)
+    push!(param_history, params)
     
     best_params = params
     best_metric = convert(T, Inf)
@@ -414,8 +416,8 @@ function train!(
         
         # Record metrics
         current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
-        param_history[epoch + 1] = current_params
-        metrics_history[epoch] = (train = train_loss, validation = val_loss)
+        push!(param_history, current_params)
+        push!(metrics_history, (train = train_loss, validation = val_loss))
         
         # Update best model
         metric = ismissing(val_loss) ? train_loss : val_loss
