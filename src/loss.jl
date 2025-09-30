@@ -247,3 +247,80 @@ function compute_gradients(params::L63Parameters{T}, target_solution::L63Solutio
     
     return loss_val, L63Parameters{T}(gσ, gρ, gβ)
 end
+
+"""
+    compute_gradients_modular(params::L63Parameters, target_solution::L63Solution, 
+                             window_start::Int, window_length::Int, loss_function::Function)
+
+Compute gradients of any loss function with respect to parameters using Enzyme AD.
+This is a modular version that can work with different loss functions.
+
+# Arguments
+- `params`: Parameters to evaluate
+- `target_solution`: Target trajectory
+- `window_start`: Starting index in target trajectory
+- `window_length`: Number of integration steps  
+- `loss_function`: Loss function that takes (predicted::Matrix, target::Matrix) -> Real
+
+# Returns
+- `(loss_value, gradients)` where gradients is an L63Parameters object
+"""
+function compute_gradients_modular(params::L63Parameters{T}, target_solution::L63Solution{T},
+                                 window_start::Int, window_length::Int, 
+                                 loss_function::Function) where {T}
+    
+    # Extract window data
+    u0 = target_solution[window_start]
+    window_end = window_start + window_length
+    target_window = target_solution.u[window_start:window_end, :]
+    dt = target_solution.system.dt
+    
+    # Convert to compatible types
+    σ0, ρ0, β0 = T(params.σ), T(params.ρ), T(params.β)
+    u0_vec = u0 isa Vector ? u0 : Vector{T}(u0)
+    target_mat = target_window isa Matrix ? target_window : Matrix{T}(target_window)
+    
+    # Create enzyme-compatible wrapper for the given loss function
+    function enzyme_loss_wrapper(σ::T, ρ::T, β::T, u0::AbstractVector{T}, 
+                               target_trajectory::AbstractMatrix{T}, 
+                               window_length::Int, dt::T) where {T}
+        
+        params = L63Parameters{T}(σ, ρ, β)
+        u = similar(u0)
+        u .= u0
+        
+        # Integrate forward and collect predicted trajectory
+        predicted_trajectory = Matrix{T}(undef, window_length, 3)
+        
+        @inbounds for i in 1:window_length 
+            u = rk4_step(u, params, dt)
+            predicted_trajectory[i, :] .= u
+        end
+        
+        # Apply the user-provided loss function
+        # Note: target_trajectory includes initial state, so we skip the first row
+        target_for_loss = target_trajectory[2:end, :]  # Skip initial state
+        return loss_function(predicted_trajectory, target_for_loss)
+    end
+    
+    # Compute gradients using Enzyme
+    grads = Enzyme.autodiff(
+        Enzyme.Reverse,
+        Enzyme.Const(enzyme_loss_wrapper),
+        Enzyme.Active(σ0),
+        Enzyme.Active(ρ0), 
+        Enzyme.Active(β0),
+        Enzyme.Const(u0_vec),
+        Enzyme.Const(target_mat),
+        Enzyme.Const(window_length),
+        Enzyme.Const(dt)
+    )
+    
+    # Extract gradients and compute loss
+    G = grads[1]
+    gσ, gρ, gβ = G[1], G[2], G[3]
+    
+    loss_val = enzyme_loss_wrapper(σ0, ρ0, β0, u0_vec, target_mat, window_length, dt)
+    
+    return loss_val, L63Parameters{T}(gσ, gρ, gβ)
+end

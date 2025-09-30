@@ -7,25 +7,26 @@ using Printf: @sprintf
 # ================================ Modular Training (Enzyme-based) ================================
 
 """
-    modular_train!(params, target_solution; 
-                   optimizer_config=adam_config(), 
-                   loss_function=window_rmse,
-                   kwargs...)
+    modular_train!(params, 
+                target_solution; 
+                optimizer_config=adam_config(), 
+                loss_function=window_rmse,
+                kwargs...)
 
-Modular training function using Enzyme.jl for precise gradient computation
+Modular training function using Enzyme.jl for gradient computation
 with Optimisers.jl for advanced optimization and Flux.jl for loss functions.
 
 This function provides:
-- Precise gradients via Enzyme.jl automatic differentiation
-- Support for a wide range of optimizers from Optimisers.jl  
-- Modular loss functions from Flux.jl
+- Gradients via Enzyme.jl automatic differentiation
+- Support for a wide range of optimizers from Optimisers.jl
+- Fully modular loss functions - any function that takes (predicted::Matrix, target::Matrix) -> Real
 - Direct parameter optimization without neural network overhead
 
 # Arguments
 - `params::L63Parameters`: Initial parameter guess
 - `target_solution::L63Solution`: Target trajectory to fit
 - `optimizer_config::OptimizerConfig`: Optimizer configuration (see optimizers.jl)
-- `loss_function::Function`: Loss function to use (see loss.jl)
+- `loss_function::Function`: Loss function to use - any function that takes (predicted, target) matrices and returns a scalar loss
 
 # Keyword Arguments
 - `epochs::Int=100`: Number of training epochs
@@ -44,22 +45,31 @@ This function provides:
 
 # Example
 ```julia
-# Quick training with Adam
+# Quick training with default RMSE loss
 results = modular_train!(params, solution)
 
-# Custom optimizer and loss
-opt_config = adamw_config(learning_rate=1e-4, weight_decay=1e-3)
+# Using MAE loss instead of RMSE
 results = modular_train!(params, solution, 
-                        optimizer_config=opt_config,
                         loss_function=window_mae,
                         epochs=200)
 
-# Robust training setup
-results = modular_train!(params, solution,
-                        optimizer_config=robust_optimizer(),
+# Custom optimizer and weighted loss
+opt_config = adamw_config(learning_rate=1e-4, weight_decay=1e-3)
+results = modular_train!(params, solution, 
+                        optimizer_config=opt_config,
                         loss_function=weighted_window_loss(window_rmse, 1.5),
+                        epochs=200)
+
+# Using adaptive loss for robustness
+results = modular_train!(params, solution,
+                        loss_function=adaptive_loss,
                         epochs=300,
                         early_stopping_patience=30)
+
+# Custom loss function
+custom_loss(pred, target) = mean(abs.(pred .- target).^1.5)  # L1.5 loss
+results = modular_train!(params, solution,
+                        loss_function=custom_loss)
 ```
 """
 function modular_train!(
@@ -67,7 +77,7 @@ function modular_train!(
     target_solution::L63Solution{T};
     # Core configuration
     optimizer_config::OptimizerConfig = adam_config(),
-    loss_function::Function = window_rmse,  # Note: Currently ignored, using RMSE from compute_gradients
+    loss_function::Function = window_rmse,
     
     # Training parameters
     epochs::Int = 100,
@@ -156,8 +166,8 @@ function modular_train!(
             
             for window_start in batch_windows
                 current_params = L63Parameters{T}(ps.σ, ps.ρ, ps.β)
-                loss_val, grads = compute_gradients(current_params, target_solution, 
-                                                  window_start, window_size)
+                loss_val, grads = compute_gradients_modular(current_params, target_solution, 
+                                                          window_start, window_size, loss_function)
                 batch_loss += loss_val
                 avg_grads = (σ = avg_grads.σ + grads.σ, 
                            ρ = avg_grads.ρ + grads.ρ, 
@@ -190,8 +200,8 @@ function modular_train!(
             val_total = zero(T)
             for window_start in val_indices
                 current_params = L63Parameters{T}(ps.σ, ps.ρ, ps.β)
-                loss_val, _ = compute_gradients(current_params, target_solution, 
-                                              window_start, window_size)
+                loss_val, _ = compute_gradients_modular(current_params, target_solution, 
+                                                      window_start, window_size, loss_function)
                 val_total += loss_val
             end
             val_total / length(val_indices)

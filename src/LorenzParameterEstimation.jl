@@ -4,7 +4,7 @@ module LorenzParameterEstimation
 export L63Parameters, L63System, L63Solution, L63TrainingConfig
 
 # Core functionality  
-export integrate, compute_loss, compute_gradients, window_rmse, train!, estimate_parameters
+export integrate, compute_loss, compute_gradients, compute_gradients_modular, window_rmse, train!, estimate_parameters
 
 # Modern modular training
 export modular_train!
