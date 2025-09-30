@@ -4,18 +4,18 @@
 
 A Julia package for parameter estimation in the Lorenz-63 chaotic dynamical system using automatic differentiation with Enzyme.jl. This package provides efficient tools for fitting Lorenz system parameters to observational data through gradient-based optimization and windowed training approaches.
 
-## Features
+## ✨ Features
 
-🔬 **Parameter Estimation**: Recover Lorenz-63 parameters (σ, ρ, β) from trajectory data
-⚡ **Enzyme-Only Gradients**: Fast automatic differentiation using Enzyme.jl exclusively for gradient computation
-🎯 **Windowed Training**: Teacher-forcing approach with short windows for stable training in chaotic systems
-🚀 **Modern Optimizers**: Full Optimisers.jl integration with Adam, SGD, AdaGrad, RMSProp, and custom chains
-⏰ **Early Stopping**: Automatic convergence detection with configurable patience
-📊 **Comprehensive Visualization**: Built-in plotting and animation capabilities
-🧪 **Robust Integration**: 4th-order Runge-Kutta integration optimized for AD compatibility
-📈 **Training Diagnostics**: Loss tracking, gradient monitoring, and convergence analysis
+- 🔬 **Parameter Estimation**: Recover Lorenz-63 parameters (σ, ρ, β) from trajectory data
+- ⚡ **Enzyme-Only Gradients**: Fast automatic differentiation using Enzyme.jl exclusively
+- 🎯 **Windowed Training**: Teacher-forcing approach for stable training in chaotic systems
+- 🚀 **Modern Optimizers**: Full Optimisers.jl integration (Adam, SGD, AdaGrad, RMSProp, custom chains)
+- ⏰ **Early Stopping**: Automatic convergence detection with configurable patience
+- 📊 **Comprehensive Visualization**: Built-in plotting and animation capabilities
+- 🧪 **Robust Integration**: 4th-order Runge-Kutta integration optimized for AD compatibility
+- 📈 **Training Diagnostics**: Loss tracking, gradient monitoring, and convergence analysis
 
-## Installation
+## 📦 Installation
 
 ```julia
 using Pkg
@@ -28,7 +28,7 @@ Or in development mode:
 Pkg.develop(path="path/to/LorenzParameterEstimation")
 ```
 
-## Quick Start
+## 🚀 Quick Start
 
 ### Basic Usage with Traditional Interface
 
@@ -54,15 +54,8 @@ best_params, loss_history, param_history = train!(initial_guess, target_solution
 ```
 
 ### Modern Interface with Advanced Optimizers
-```
-
-```
-
-### Modern Interface with Advanced Optimizers
 
 For maximum flexibility with state-of-the-art optimizers and early stopping:
-
-```julia
 
 ```julia
 using LorenzParameterEstimation
@@ -86,8 +79,7 @@ result = modular_train!(
     verbose = true
 )
 
-print("Best parameters: ", result.best_params)
-print("Best parameters: ", result.best_params)
+println("Best parameters: ", result.best_params)
 ```
 
 ### Available Optimizers
@@ -111,7 +103,7 @@ custom_config = OptimizerConfig(custom_optimizer, 0.01, name="Adam+ClipNorm")
 custom_result = modular_train!(params, target, optimizer_config = custom_config)
 ```
 
-### Early Stopping
+### ⏰ Early Stopping
 
 Automatic convergence detection prevents overfitting:
 
@@ -127,7 +119,7 @@ result = modular_train!(
 # Training may stop before 500 epochs if convergence is detected
 ```
 
-## Core Types
+## 📝 Core Types
 
 ### Parameters
 
@@ -143,7 +135,7 @@ result = modular_train!(
 - `L63TrainingConfig{T}`: Traditional training configuration for `train!` function
 - `OptimizerConfig`: Modern optimizer configuration for `modular_train!` with Optimisers.jl support
 
-## Key Functions
+## 🔧 Key Functions
 
 ### Integration
 
@@ -187,7 +179,7 @@ rmsprop_config(learning_rate=0.001)
 OptimizerConfig(optimizer, learning_rate, name="Custom")
 ```
 
-### Visualization
+## 📈 Visualization
 
 The package includes comprehensive visualization tools:
 
@@ -205,6 +197,9 @@ plot_time_series([true_sol, fitted_sol], labels=["True", "Fitted"])
 
 # 3D phase portraits
 plot_phase_portrait(solution, title="Lorenz Attractor")
+
+# Create training animation
+animate_comparison(true_traj, fitted_traj, true_params, fitted_params)
 ```
 
 The training notebook `examples/l63_training.ipynb` demonstrates comprehensive visualizations including:
@@ -214,13 +209,7 @@ The training notebook `examples/l63_training.ipynb` demonstrates comprehensive v
 - Time series comparisons highlighting parameter estimation quality
 - Performance summary tables with error metrics
 
-```julia
-```julia
-# Create training animation
-animate_comparison(true_traj, fitted_traj, true_params, fitted_params)
-```
-
-## Examples
+## 📚 Examples
 
 The `examples/` directory contains comprehensive demonstrations:
 
@@ -245,7 +234,7 @@ for (name, config) in [("Adam", adam_config(0.01)),
 end
 ```
 
-## Mathematical Background
+## 🧮 Mathematical Background
 
 The Lorenz-63 system is defined by:
 
@@ -269,7 +258,7 @@ Where:
 4. **Gradient Clipping**: L2 norm clipping to prevent gradient explosion
 5. **Selective Updates**: Choose which parameters to optimize
 
-## Performance
+## ⚡ Performance
 
 The package is optimized for performance with Enzyme.jl providing state-of-the-art automatic differentiation:
 
@@ -286,11 +275,11 @@ Typical performance on a modern CPU:
 - Integration: ~1000 steps/second for dense output
 - Optimizer overhead: Minimal due to efficient Optimisers.jl integration
 
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please see the contributing guidelines and feel free to submit issues and pull requests.
 
-## Citation
+## 📝 Citation
 
 If you use this package in your research, please cite:
 
@@ -303,11 +292,11 @@ If you use this package in your research, please cite:
 }
 ```
 
-## License
+## 📋 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Related Work
+## 🔗 Related Work
 
 - [Enzyme.jl](https://github.com/EnzymeAD/Enzyme.jl): High-performance automatic differentiation
 - [DifferentialEquations.jl](https://github.com/SciML/DifferentialEquations.jl): Comprehensive ODE solving
