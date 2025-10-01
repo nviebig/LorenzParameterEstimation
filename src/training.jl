@@ -307,7 +307,7 @@ function modular_train!(
         if patience_counter >= early_stopping_patience
             if verbose
                 println("\n Early stopping triggered at epoch $epoch")
-                println("   Best metric: $(best_metric:.8f)")
+                println("   Best metric: ", @sprintf("%.8f", best_metric))
             end
             break
         end
