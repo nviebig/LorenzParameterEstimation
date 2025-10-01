@@ -10,29 +10,67 @@ using Enzyme  # For compute_gradients() function
 # ================================ Enzyme-compatible helper functions ================================
 # These functions are defined at module level to avoid scoping issues with Enzyme
 
-function mae_enzyme_function(σ::T, ρ::T, β::T, u0::AbstractVector{T}, 
-                            target_trajectory::AbstractMatrix{T}, 
-                            window_length::Int, dt::T) where {T}
-    params = L63Parameters{T}(σ, ρ, β)
-    u = similar(u0)
-    u .= u0
+
+"""
+    mae_enzyme_function(σ, ρ, β, u0, target_trajectory, window_length, dt)
+
+Compute the **mean absolute error (MAE)** between a predicted Lorenz-63 trajectory 
+(obtained by integrating with RK4 for `window_length` steps) and a given target trajectory. 
+
+- Parameters (`σ`, `ρ`, `β`) define the Lorenz-63 system.  
+- `u0` is the initial 3D state vector.  
+- `target_trajectory` is an N×3 matrix of reference states.  
+- `window_length` is the number of time steps to integrate.  
+- `dt` is the integration step size.  
+
+The absolute error is smoothed with `sqrt(x^2 + ε)` to ensure differentiability for Enzyme AD.  
+Returns the average per-component error over the window.
+"""
+
+function mae_enzyme_function(
+    σ::T,                                                   # Parameter σ
+    ρ::T,                                                   # Parameter ρ
+    β::T,                                                   # Parameter β
+    u0::AbstractVector{T},                                  # Initial state (3-vector)    
+    target_trajectory::AbstractMatrix{T},                   # Target trajectory (N×3 matrix)
+    window_length::Int,                                     # Number of integration steps
+    dt::T                                                   # Time step
+    ) where {T} 
+
+    # Construct parameters and initial state
+    params = L63Parameters{T}(σ, ρ, β)                      # Construct parameters
+    u = similar(u0)                                         # Initial state with same backend
+    u .= u0                                                 # Copy initial state
+
+    ae = zero(T)                                            # Absolute error accumulator
+    count = 0                                               # Count of comparisons
+    epsilon = T(1e-6)                                       # Small value for smooth approximation
     
-    ae = zero(T) # Absolute error accumulator
-    count = 0
-    epsilon = T(1e-6)  # Small value for smooth approximation
-    
-    @inbounds for i in 1:window_length 
-        u = rk4_step(u, params, dt)
-        for j in 1:3
-            diff = u[j] - target_trajectory[i+1, j]
+    @inbounds for i in 1:window_length                      # Integrate forward
+        u = rk4_step(u, params, dt)                         # One RK4 step
+        for j in 1:3                                        # Compare to target at row i+1
+            diff = u[j] - target_trajectory[i+1, j]         # Difference
             # Use smooth approximation: sqrt(x^2 + ε) ≈ |x| but differentiable everywhere
-            ae += sqrt(diff * diff + epsilon)
-            count += 1
+            ae += sqrt(diff * diff + epsilon)               # Smooth absolute value
+            count += 1                                      # Increment count
         end
     end
     
     return ae / count
 end
+
+"""
+    adaptive_enzyme_function(σ, ρ, β, u0, target_trajectory, window_length, dt)
+
+Compute an **adaptive robust loss (Huber-like)** between a predicted Lorenz-63 trajectory 
+and a given target trajectory.  
+
+- For small errors (|diff| ≤ δ): behaves like scaled MSE (0.5 * diff² / δ).  
+- For large errors (|diff| > δ): behaves like MAE (|diff| − 0.5δ).  
+- Uses a smooth approximation of |diff| to remain differentiable for Enzyme AD.  
+
+Returns the mean loss across all time steps and state components.
+"""
 
 function adaptive_enzyme_function(σ::T, ρ::T, β::T, u0::AbstractVector{T}, 
                                  target_trajectory::AbstractMatrix{T}, 
@@ -70,6 +108,21 @@ function adaptive_enzyme_function(σ::T, ρ::T, β::T, u0::AbstractVector{T},
     
     return total_loss / count
 end
+
+"""
+    mse_enzyme_function(σ, ρ, β, u0, target_trajectory, window_length, dt)
+
+Compute the **mean squared error (MSE)** between a predicted Lorenz-63 trajectory 
+(obtained by RK4 integration) and a given target trajectory.  
+
+- Parameters (`σ`, `ρ`, `β`) define the Lorenz-63 system.  
+- `u0` is the initial 3D state vector.  
+- `target_trajectory` is an N×3 matrix of reference states.  
+- `window_length` is the number of integration steps.  
+- `dt` is the integration step size.  
+
+Returns the average squared error per component over the integration window.
+"""
 
 function mse_enzyme_function(σ::T, ρ::T, β::T, u0::AbstractVector{T}, 
                             target_trajectory::AbstractMatrix{T}, 
