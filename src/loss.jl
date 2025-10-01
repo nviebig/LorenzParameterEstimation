@@ -148,6 +148,20 @@ end
 
 # ================================ User-facing loss functions ================================
 
+# These functions operate on full trajectory matrices and can be passed to modular_train!()
+# They can also be used directly by users for custom training loops.
+# All take (predicted::Matrix, target::Matrix) -> Real
+
+# User specifies: loss_function = window_rmse
+#                 ↓
+# Training creates: predicted_matrix, target_matrix  
+#                 ↓
+# Forward pass: window_rmse(predicted_matrix, target_matrix) → scalar
+#                 ↓
+# Gradient pass: Uses loss_function_enzyme(σ,ρ,β,...) for Enzyme.autodiff
+#                 ↓
+# Result: Gradients w.r.t. parameters
+
 """
     window_rmse(predicted, target)
 
@@ -384,34 +398,37 @@ This is a modular version that can work with different loss functions.
 # Returns
 - `(loss_value, gradients)` where gradients is an L63Parameters object
 """
-function compute_gradients_modular(params::L63Parameters{T}, target_solution::L63Solution{T},
-                                 window_start::Int, window_length::Int, 
-                                 loss_function::Function) where {T}
+function compute_gradients_modular(
+    params::L63Parameters{T},                   # Parameters to evaluate
+    target_solution::L63Solution{T},            # Target trajectory
+    window_start::Int, window_length::Int,      # Number of integration steps
+    loss_function::Function                     # Loss function to use
+    ) where {T}
     
     # Extract window data
-    u0 = target_solution[window_start]
-    window_end = window_start + window_length
-    target_window = target_solution.u[window_start:window_end, :]
-    dt = target_solution.system.dt
+    u0 = target_solution[window_start]         # Initial state at window start
+    window_end = window_start + window_length       # End index (exclusive)
+    target_window = target_solution.u[window_start:window_end, :] # Target states for the window
+    dt = target_solution.system.dt # Time step
     
     # Convert to compatible types
-    σ0, ρ0, β0 = T(params.σ), T(params.ρ), T(params.β)
-    u0_vec = u0 isa Vector ? u0 : Vector{T}(u0)
-    target_mat = target_window isa Matrix ? target_window : Matrix{T}(target_window)
+    σ0, ρ0, β0 = T(params.σ), T(params.ρ), T(params.β)  # Ensure parameters are of type T
+    u0_vec = u0 isa Vector ? u0 : Vector{T}(u0) # Ensure u0 is a Vector{T}
+    target_mat = target_window isa Matrix ? target_window : Matrix{T}(target_window) # Ensure target is Matrix{T}
     
     # For now, use specific loss function implementations that Enzyme can handle
     if loss_function === window_rmse
         # Use the proven working enzyme function for RMSE
         grads = Enzyme.autodiff(
-            Enzyme.Reverse,
-            Enzyme.Const(loss_function_enzyme),
-            Enzyme.Active(σ0),
-            Enzyme.Active(ρ0), 
-            Enzyme.Active(β0),
-            Enzyme.Const(u0_vec),
-            Enzyme.Const(target_mat),
-            Enzyme.Const(window_length),
-            Enzyme.Const(dt)
+            Enzyme.Reverse,                         # Reverse mode AD
+            Enzyme.Const(loss_function_enzyme),     # Function to differentiate
+            Enzyme.Active(σ0),                      # Active variable
+            Enzyme.Active(ρ0),                      # Active variable
+            Enzyme.Active(β0),                      # Active variable
+            Enzyme.Const(u0_vec),                   # Constant input
+            Enzyme.Const(target_mat),               # Constant input    
+            Enzyme.Const(window_length),            # Constant input
+            Enzyme.Const(dt)                        # Constant input
         )
         
         G = grads[1]

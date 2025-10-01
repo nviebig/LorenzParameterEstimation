@@ -14,10 +14,8 @@ export window_mae, window_mse, weighted_window_loss, probabilistic_loss, adaptiv
 export mse, mae, huber_loss  # Re-exported from Flux
 
 # Optimizer configurations
-export OptimizerConfig, build_optimizer
-export sgd_config, adam_config, adamw_config, rmsprop_config, adagrad_config, lion_config
-export robust_optimizer, fast_optimizer, conservative_optimizer
-export SchedulerConfig, exponential_decay_schedule, cosine_annealing_schedule, step_decay_schedule
+export OptimizerConfig
+export adam_config, sgd_config, adamw_config, adagrad_config, rmsprop_config
 
 # Bayesian inference - requires Turing.jl
 # export bayesian_parameter_estimation, variational_inference, posterior_predictive_check
