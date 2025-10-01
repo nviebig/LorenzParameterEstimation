@@ -72,23 +72,23 @@ end
 """
     classic_params(T=Float64)
 
-Return classic chaotic Lorenz-63 parameters (σ=10, ρ=28, β=8/3).
+Return classic chaotic Lorenz-63 parameters (σ=10, ρ=28, β=8/3) with default extended parameters.
 """
-classic_params(::Type{T}=Float64) where {T} = L63Parameters{T}(T(10), T(28), T(8)/T(3))
+classic_params(::Type{T}=Float64) where {T} = L63Parameters(T(10), T(28), T(8)/T(3))
 
 """
     stable_params(T=Float64)
 
-Return parameters for stable/periodic behavior (σ=10, ρ=15, β=8/3).
+Return parameters for stable/periodic behavior (σ=10, ρ=15, β=8/3) with default extended parameters.
 """
-stable_params(::Type{T}=Float64) where {T} = L63Parameters{T}(T(10), T(15), T(8)/T(3))
+stable_params(::Type{T}=Float64) where {T} = L63Parameters(T(10), T(15), T(8)/T(3))
 
 """
     periodic_params(T=Float64)
 
-Return parameters for periodic orbits (σ=10, ρ=8, β=8/3).
+Return parameters for periodic orbits (σ=10, ρ=8, β=8/3) with default extended parameters.
 """
-periodic_params(::Type{T}=Float64) where {T} = L63Parameters{T}(T(10), T(8), T(8)/T(3))
+periodic_params(::Type{T}=Float64) where {T} = L63Parameters(T(10), T(8), T(8)/T(3))
 
 """
     standard_initial_condition(T=Float64)
@@ -183,4 +183,71 @@ function validation_split(solution::L63Solution{T}, train_fraction::Real=0.8) wh
     val_solution = L63Solution(val_t, val_u, val_system)
     
     return train_solution, val_solution
+end
+
+# ================================ Extended Parameter Utilities ================================
+
+"""
+    with_coordinate_shifts(params::L63Parameters, x_s, y_s, z_s)
+
+Create a new L63Parameters with specified coordinate shifts, keeping other parameters unchanged.
+"""
+function with_coordinate_shifts(params::L63Parameters{T}, x_s, y_s, z_s) where {T}
+    return L63Parameters(params.σ, params.ρ, params.β, T(x_s), T(y_s), T(z_s), params.θ)
+end
+
+"""
+    with_theta(params::L63Parameters, θ)
+
+Create a new L63Parameters with specified theta parameter, keeping other parameters unchanged.
+"""
+function with_theta(params::L63Parameters{T}, θ) where {T}
+    return L63Parameters(params.σ, params.ρ, params.β, params.x_s, params.y_s, params.z_s, T(θ))
+end
+
+"""
+    classic_lorenz(params::L63Parameters)
+
+Extract only the classic Lorenz parameters (σ, ρ, β) by setting extended parameters to defaults.
+"""
+function classic_lorenz(params::L63Parameters{T}) where {T}
+    return L63Parameters(params.σ, params.ρ, params.β)  # Uses default values for extended params
+end
+
+"""
+    has_coordinate_shifts(params::L63Parameters)
+
+Check if the parameters have non-zero coordinate shifts.
+"""
+function has_coordinate_shifts(params::L63Parameters)
+    return !(params.x_s ≈ 0 && params.y_s ≈ 0 && params.z_s ≈ 0)
+end
+
+"""
+    has_theta_modification(params::L63Parameters)
+
+Check if the parameters have a theta modification (θ ≠ 1).
+"""
+function has_theta_modification(params::L63Parameters)
+    return !(params.θ ≈ 1)
+end
+
+"""
+    parameter_summary(params::L63Parameters)
+
+Print a summary of the parameter values and which extensions are active.
+"""
+function parameter_summary(params::L63Parameters)
+    println("L63Parameters Summary:")
+    println("  Core parameters: σ=$(params.σ), ρ=$(params.ρ), β=$(params.β)")
+    if has_coordinate_shifts(params)
+        println("  Coordinate shifts: x_s=$(params.x_s), y_s=$(params.y_s), z_s=$(params.z_s)")
+    else
+        println("  Coordinate shifts: None (all zero)")
+    end
+    if has_theta_modification(params)
+        println("  Theta modification: θ=$(params.θ)")
+    else
+        println("  Theta modification: None (θ=1)")
+    end
 end
