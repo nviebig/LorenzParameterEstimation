@@ -1,6 +1,6 @@
 # LorenzParameterEstimation.jl
 
-[![CI](https://github.com/nviebig/LorenzParameterEstimation.jl/workflows/CI/badge.svg)](https://github.com/nviebig/LorenzParameterEstimation.jl/actions/workflows/ci.yml)
+[![CI](https://github.com/nviebig/LorenzParameterEstimation.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/nviebig/LorenzParameterEstimation.jl/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nviebig/LorenzParameterEstimation.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/nviebig/LorenzParameterEstimation.jl)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Julia](https://img.shields.io/badge/julia-v1.9+-blue.svg)](https://julialang.org)
