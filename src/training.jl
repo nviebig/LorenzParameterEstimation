@@ -73,71 +73,71 @@ results = modular_train!(params, solution,
 ```
 """
 function modular_train!(
-    params::L63Parameters{T},
-    target_solution::L63Solution{T};
+    params::L63Parameters{T},                           # Initial parameter guess
+    target_solution::L63Solution{T};                    # Target trajectory to fit
     # Core configuration
-    optimizer_config::OptimizerConfig = adam_config(),
-    loss_function::Function = window_rmse,
+    optimizer_config::OptimizerConfig = adam_config(),  # Optimizer configuration (which optimizer, learning rate, etc. - see optimizers.jl)
+    loss_function::Function = window_rmse,              # Loss function to use - any function that takes (predicted, target) matrices and returns a scalar loss
     
     # Training parameters
-    epochs::Int = 100,
-    window_size::Int = 300,
-    stride::Union{Nothing, Int} = nothing,
-    batch_size::Int = 32,
+    epochs::Int = 100,                                  # Number of training epochs
+    window_size::Int = 300,                             # Size of trajectory windows
+    stride::Union{Nothing, Int} = nothing,              # Stride between windows (default: window_size ÷ 2)
+    batch_size::Int = 32,                               # Mini-batch size
     
     # Data splitting
-    train_fraction::Real = 0.8,
-    shuffle::Bool = true,
+    train_fraction::Real = 0.8,                         # Fraction of data for training (remaining for validation)
+    shuffle::Bool = true,                               # Shuffle training data
     
     # Parameter updates
-    update_σ::Bool = true,
-    update_ρ::Bool = true,
-    update_β::Bool = true,
-    
+    update_σ::Bool = true,                              # Whether to update σ parameter
+    update_ρ::Bool = true,                              # Whether to update ρ parameter
+    update_β::Bool = true,                              # Whether to update β parameter
+
     # Training control
-    verbose::Bool = true,
-    eval_every::Int = 1,
-    early_stopping_patience::Int = 20,
-    early_stopping_min_delta::Real = 1e-6,
+    verbose::Bool = true,                               # Print training progress
+    eval_every::Int = 1,                                # Evaluate every N epochs (on validation set)
+    early_stopping_patience::Int = 20,                  # Early stopping patience (in epochs)
+    early_stopping_min_delta::Real = 1e-6,              # Minimum change to qualify as improvement for early stopping
     
     # Reproducibility
-    rng::Random.AbstractRNG = Random.default_rng()
+    rng::Random.AbstractRNG = Random.default_rng()      # Random number generator
 ) where {T}
     
     # Set default stride
-    stride_val = isnothing(stride) ? window_size ÷ 2 : stride
+    stride_val = isnothing(stride) ? window_size ÷ 2 : stride  # Default to half window size
     
     # Generate window starting positions
-    max_start = length(target_solution) - window_size
-    max_start > 0 || throw(ArgumentError("Window size too large for trajectory"))
+    max_start = length(target_solution) - window_size    # Last valid start index
+    max_start > 0 || throw(ArgumentError("Window size too large for trajectory"))   # Ensure we can create at least one window
     
-    window_starts = collect(1:stride_val:max_start)
-    n_windows = length(window_starts)
+    window_starts = collect(1:stride_val:max_start)      # Starting indices of windows
+    n_windows = length(window_starts)                    # Number of windows 
     
     # Train/validation split
-    indices = collect(1:n_windows)
-    if shuffle
-        Random.shuffle!(rng, indices)
+    indices = collect(1:n_windows)                      # Indices for shuffling
+    if shuffle                                          # Shuffle if specified
+        Random.shuffle!(rng, indices)                   # Shuffle indices
     end
     
-    train_count = max(1, round(Int, train_fraction * n_windows))
-    train_indices = window_starts[indices[1:train_count]]
-    val_indices = train_count < n_windows ? window_starts[indices[train_count + 1:end]] : Int[]
+    train_count = max(1, round(Int, train_fraction * n_windows)) # Ensure at least one training window
+    train_indices = window_starts[indices[1:train_count]]  # Training window start indices
+    val_indices = train_count < n_windows ? window_starts[indices[train_count + 1:end]] : Int[] # Validation window start indices
     
     # Initialize parameters as NamedTuple for Optimisers.jl
     # Wrap scalars in arrays to make them mutable for Optimisers.jl
-    ps = (σ = [params.σ], ρ = [params.ρ], β = [params.β])
-    opt_state = Optimisers.setup(optimizer_config.optimizer, ps)
+    ps = (σ = [params.σ], ρ = [params.ρ], β = [params.β])           # Wrap in NamedTuple
+    opt_state = Optimisers.setup(optimizer_config.optimizer, ps)    # Initialize optimizer state
     
     # Parameter update mask (for masking gradients)
-    update_mask = (σ = update_σ, ρ = update_ρ, β = update_β)
+    update_mask = (σ = update_σ, ρ = update_ρ, β = update_β)       # Which parameters to update
     
     # Training state
-    metrics_history = NamedTuple[]
-    param_history = L63Parameters{T}[params]
-    best_params = params
-    best_metric = convert(T, Inf)
-    patience_counter = 0
+    metrics_history = NamedTuple[]                                 # To store (epoch, train_loss, val_loss, params)
+    param_history = L63Parameters{T}[params]                       # To store parameter history
+    best_params = params                                           # Best parameters found                
+    best_metric = convert(T, Inf)                                  # Best metric (lower is better)
+    patience_counter = 0                                           # Early stopping counter
     
     if verbose
         println("   Optimizer: $(optimizer_config.name)")
@@ -148,13 +148,13 @@ function modular_train!(
         println("Epoch │   Train    │    Val     │      σ     │      ρ     │      β     │")
         println("──────┼────────────┼────────────┼────────────┼────────────┼────────────┤")
     end
-    
-    for epoch in 1:epochs
+    # Training loop
+    for epoch in 1:epochs         
         # Training phase
-        epoch_loss = zero(T)
+        epoch_loss = zero(T)    # Initialize epoch loss
         
         # Shuffle training windows
-        current_train_indices = shuffle ? Random.shuffle(rng, copy(train_indices)) : train_indices
+        current_train_indices = shuffle ? Random.shuffle(rng, copy(train_indices)) : train_indices  # Shuffle if specified
         
         # Process training windows in batches
         train_batches = [current_train_indices[i:min(i+batch_size-1, end)] 
@@ -162,16 +162,19 @@ function modular_train!(
         
         for batch_windows in train_batches
             # Compute average gradients over the batch
-            batch_loss = zero(T)
+            batch_loss = zero(T).  # Initialize batch loss
             avg_grads = (σ = zero(T), ρ = zero(T), β = zero(T))
             
-            for window_start in batch_windows
-                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
-                loss_val, grads = compute_gradients_modular(current_params, target_solution, 
-                                                          window_start, 
-                                                          window_size, 
-                                                          loss_function)
-                batch_loss += loss_val
+            for window_start in batch_windows                                       # Process each window in the batch
+                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])        # Convert current ps to L63Parameters for gradient computation
+                loss_val, grads = compute_gradients_modular(
+                    current_params, 
+                    target_solution, 
+                    window_start, 
+                    window_size, 
+                    loss_function
+                )  # Compute loss and gradients via Enzyme
+                batch_loss += loss_val # Accumulate batch loss
                 avg_grads = (σ = avg_grads.σ + grads.σ, 
                            ρ = avg_grads.ρ + grads.ρ, 
                            β = avg_grads.β + grads.β)
@@ -190,46 +193,51 @@ function modular_train!(
                            β = [update_mask.β ? avg_grads.β : zero(T)])
             
             # Update parameters using Optimisers.jl
-            opt_state, ps = Optimisers.update(opt_state, ps, masked_grads)
+            opt_state, ps = Optimisers.update(opt_state, ps, masked_grads)  # Update parameters using Optimisers.jl
             epoch_loss += batch_loss
         end
-        
-        train_loss = epoch_loss / length(train_batches)
-        
+
+        train_loss = epoch_loss / length(train_batches)  # Average training loss over epoch
+
         # Validation phase
-        val_loss = if !isempty(val_indices) && epoch % eval_every == 0
-            val_total = zero(T)
-            for window_start in val_indices
-                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
-                loss_val, _ = compute_gradients_modular(current_params, target_solution, 
-                                                      window_start, window_size, loss_function)
-                val_total += loss_val
+        val_loss = if !isempty(val_indices) && epoch % eval_every == 0          # Only evaluate on validation set every eval_every epochs
+            val_total = zero(T)                                                 # Initialize validation loss                        
+            for window_start in val_indices                                     # Process each validation window               
+                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])    # Convert current ps to L63Parameters for gradient computation
+                loss_val, _ = compute_gradients_modular(                        # Compute loss (ignore gradients)
+                    current_params,                                             # Current parameters
+                    target_solution,                                            # Target solution
+                    window_start,                                               # Window start
+                    window_size,                                                # Window size
+                    loss_function                                               # Loss function
+                )
+                val_total += loss_val                                           # Accumulate validation loss               
             end
-            val_total / length(val_indices)
+            val_total / length(val_indices)                                     # Average validation loss
         else
-            missing
+            missing                                                             # No validation this epoch                          
         end
         
-                # Record metrics
-        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
-        push!(param_history, current_params)
-        
-        metrics = (
-            epoch = epoch,
-            train_loss = train_loss,
-            val_loss = val_loss,
-            params = current_params
+        # Record metrics
+        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])            # Current parameters
+        push!(param_history, current_params)                                    # Store parameter history
+
+        metrics = (                                                             # Record metrics
+            epoch = epoch,                                                      # Current epoch
+            train_loss = train_loss,                                            # Training loss
+            val_loss = val_loss,                                                # Validation loss (or missing)     
+            params = current_params                                             # Current parameters      
         )
-        push!(metrics_history, metrics)
+        push!(metrics_history, metrics)                                         # Store metrics history
         
         # Update best model
-        metric_for_best = ismissing(val_loss) ? train_loss : val_loss
-        if metric_for_best < best_metric - early_stopping_min_delta
-            best_metric = metric_for_best
-            best_params = current_params
-            patience_counter = 0
+        metric_for_best = ismissing(val_loss) ? train_loss : val_loss           # Use validation loss if available, else training loss
+        if metric_for_best < best_metric - early_stopping_min_delta             # Improvement found
+            best_metric = metric_for_best                                       # Update best metric
+            best_params = current_params                                        # Update best parameters
+            patience_counter = 0                                                # Reset patience counter
         else
-            patience_counter += 1
+            patience_counter += 1                                               # No improvement, increment counter 
         end
         
         # Print progress
@@ -241,7 +249,7 @@ function modular_train!(
         # Early stopping
         if patience_counter >= early_stopping_patience
             if verbose
-                println("\n⚠️  Early stopping triggered at epoch $epoch")
+                println("\n Early stopping triggered at epoch $epoch")
                 println("   Best metric: $(best_metric:.8f)")
             end
             break
@@ -250,7 +258,7 @@ function modular_train!(
     
     if verbose
         println()
-        println("✅ Training completed")
+        println("Training completed")
         println("   Final epochs: $(length(param_history) - 1)")
         println("   Best metric: ", best_metric)
         println()
@@ -289,8 +297,7 @@ function _print_training_footer()
 end
 
 # -- Public API --------------------------------------------------------------
-
-# ================================ Traditional Training (Enzyme-based) ================================
+# ================================ Traditional Training (Enzyme-based),  ================================
 
 """
     train!(params::L63Parameters, target_solution::L63Solution, config::L63TrainingConfig)
@@ -299,6 +306,7 @@ Traditional training function using Enzyme.jl for gradient computation.
 This provides precise gradients directly from the ODE integration with full
 Optimisers.jl support for advanced optimization.
 """
+
 function train!(
     params::L63Parameters{T},
     target_solution::L63Solution{T},
