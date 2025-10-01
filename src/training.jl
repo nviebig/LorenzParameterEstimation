@@ -432,7 +432,8 @@ function train!(
                 window_start = (window_idx - 1) * stride + 1
                 
                 # Convert current ps to L63Parameters for gradient computation
-                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
+                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
+                                                 params.x_s, params.y_s, params.z_s, params.θ)
                 loss_val, gradients = compute_gradients(current_params, target_solution, window_start, window_size, loss_fn)
                 
                 batch_loss += loss_val
@@ -468,7 +469,7 @@ function train!(
             opt_state, ps = Optimisers.update(opt_state, ps, masked_grads)
             
             # Convert updated parameters back to L63Parameters
-            params = L63Parameters(ps.σ[1], ps.ρ[1], ps.β[1])
+            params = L63Parameters(ps.σ[1], ps.ρ[1], ps.β[1], params.x_s, params.y_s, params.z_s, params.θ)
             
             epoch_loss += batch_loss
             n_batches += 1
@@ -481,7 +482,8 @@ function train!(
             val_total = zero(T)
             for window_idx in val_indices
                 window_start = (window_idx - 1) * stride + 1
-                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
+                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
+                                                 params.x_s, params.y_s, params.z_s, params.θ)
                 loss_val, _ = compute_gradients(current_params, target_solution, window_start, window_size, loss_fn)
                 val_total += loss_val
             end
@@ -491,7 +493,8 @@ function train!(
         end
         
         # Record metrics
-        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
+        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
+                                         params.x_s, params.y_s, params.z_s, params.θ)
         push!(param_history, current_params)
         push!(metrics_history, (train = train_loss, validation = val_loss))
         
