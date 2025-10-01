@@ -1,6 +1,10 @@
 # LorenzParameterEstimation.jl
 
-[![Build Status](https://github.com/nviebig/LorenzParameterEstimation.jl/workflows/CI/badge.svg)](https://github.com/nviebig/LorenzParameterEstimation.jl/actions)
+[![CI](https://github.com/nviebig/LorenzParameterEstimation.jl/workflows/CI/badge.svg)](https://github.com/nviebig/LorenzParameterEstimation.jl/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/nviebig/LorenzParameterEstimation.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/nviebig/LorenzParameterEstimation.jl)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Julia](https://img.shields.io/badge/julia-v1.9+-blue.svg)](https://julialang.org)
+[![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
 A Julia package for **parameter estimation in the Lorenz-63 chaotic dynamical system** using modern automatic differentiation and optimization techniques. The main goal is to recover unknown parameters (σ, ρ, β) from observed trajectory data, which is challenging due to the chaotic nature of the system.
 

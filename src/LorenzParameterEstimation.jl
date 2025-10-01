@@ -11,7 +11,7 @@ export modular_train!
 
 # Loss functions (using Flux.jl ecosystem)
 export window_mae, window_mse, weighted_window_loss, probabilistic_loss, adaptive_loss
-export mse, mae, huber_loss  # Re-exported from Flux
+# Note: huber_loss, mae, mse are implemented internally - not re-exported from Flux
 
 # Optimizer configurations
 export OptimizerConfig
