@@ -41,6 +41,16 @@ Base.:-(p1::L63Parameters, p2::L63Parameters) = L63Parameters(p1.σ - p2.σ, p1.
 Base.:*(α::Real, p::L63Parameters) = L63Parameters(α * p.σ, α * p.ρ, α * p.β)
 Base.:*(p::L63Parameters, α::Real) = α * p
 
+# Array-like interface for gradient operations
+Base.length(::L63Parameters) = 3
+Base.iterate(p::L63Parameters, state=1) = state > 3 ? nothing : (getfield(p, state), state + 1)
+Base.getindex(p::L63Parameters, i::Int) = getfield(p, i)
+Base.isapprox(p1::L63Parameters, p2::L63Parameters; kwargs...) = 
+    isapprox(p1.σ, p2.σ; kwargs...) && isapprox(p1.ρ, p2.ρ; kwargs...) && isapprox(p1.β, p2.β; kwargs...)
+
+# Broadcasting support
+Base.broadcastable(p::L63Parameters) = (p.σ, p.ρ, p.β)
+
 # Norm for gradient clipping
 LinearAlgebra.norm(p::L63Parameters) = sqrt(p.σ^2 + p.ρ^2 + p.β^2)
 
