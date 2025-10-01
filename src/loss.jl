@@ -38,7 +38,7 @@ function mae_enzyme_function(
     ) where {T} 
 
     # Construct parameters and initial state
-    params = L63Parameters{T}(σ, ρ, β)                      # Construct parameters
+    params = L63Parameters(σ, ρ, β)                      # Construct parameters
     u = similar(u0)                                         # Initial state with same backend
     u .= u0                                                 # Copy initial state
 
@@ -75,7 +75,7 @@ Returns the mean loss across all time steps and state components.
 function adaptive_enzyme_function(σ::T, ρ::T, β::T, u0::AbstractVector{T}, 
                                  target_trajectory::AbstractMatrix{T}, 
                                  window_length::Int, dt::T) where {T}
-    params = L63Parameters{T}(σ, ρ, β)
+    params = L63Parameters(σ, ρ, β)
     u = similar(u0)
     u .= u0
     
@@ -127,7 +127,7 @@ Returns the average squared error per component over the integration window.
 function mse_enzyme_function(σ::T, ρ::T, β::T, u0::AbstractVector{T}, 
                             target_trajectory::AbstractMatrix{T}, 
                             window_length::Int, dt::T) where {T}
-    params = L63Parameters{T}(σ, ρ, β)
+    params = L63Parameters(σ, ρ, β)
     u = similar(u0)
     u .= u0
     
@@ -336,7 +336,7 @@ Enzyme-compatible wrapper for loss computation with scalar parameters.
     dt::T
     ) where {T}
     
-    params = L63Parameters{T}(σ, ρ, β) # Construct parameters
+    params = L63Parameters(σ, ρ, β) # Construct parameters with defaults for extended fields
     u = similar(u0) # Initial state with same backend
     u .= u0
     
@@ -435,7 +435,7 @@ function compute_gradients_modular(
         gσ, gρ, gβ = G[1], G[2], G[3]
         loss_val = loss_function_enzyme(σ0, ρ0, β0, u0_vec, target_mat, window_length, dt)
         
-        return loss_val, L63Parameters{T}(gσ, gρ, gβ)
+        return loss_val, L63Parameters(gσ, gρ, gβ)
         
     elseif loss_function === window_mae
         grads = Enzyme.autodiff(
@@ -454,7 +454,7 @@ function compute_gradients_modular(
         gσ, gρ, gβ = grads[1][1], grads[1][2], grads[1][3]
         loss_val = mae_enzyme_function(σ0, ρ0, β0, u0_vec, target_mat, window_length, dt)
         
-        return loss_val, L63Parameters{T}(gσ, gρ, gβ)
+        return loss_val, L63Parameters(gσ, gρ, gβ)
         
     elseif loss_function === window_mse
         grads = Enzyme.autodiff(
@@ -473,7 +473,7 @@ function compute_gradients_modular(
         gσ, gρ, gβ = grads[1][1], grads[1][2], grads[1][3]
         loss_val = mse_enzyme_function(σ0, ρ0, β0, u0_vec, target_mat, window_length, dt)
         
-        return loss_val, L63Parameters{T}(gσ, gρ, gβ)
+        return loss_val, L63Parameters(gσ, gρ, gβ)
         
     elseif loss_function === adaptive_loss
         grads = Enzyme.autodiff(
@@ -492,7 +492,7 @@ function compute_gradients_modular(
         gσ, gρ, gβ = grads[1][1], grads[1][2], grads[1][3]
         loss_val = adaptive_enzyme_function(σ0, ρ0, β0, u0_vec, target_mat, window_length, dt)
         
-        return loss_val, L63Parameters{T}(gσ, gρ, gβ)
+        return loss_val, L63Parameters(gσ, gρ, gβ)
         
     else
         # For other loss functions, fall back to the old approach for now
@@ -504,7 +504,7 @@ function compute_gradients_modular(
                                    target_trajectory::AbstractMatrix{T}, 
                                    window_length::Int, dt::T) where {T}
             
-            params = L63Parameters{T}(σ, ρ, β)
+            params = L63Parameters(σ, ρ, β)
             u = similar(u0)
             u .= u0
             
@@ -543,7 +543,7 @@ function compute_gradients_modular(
         
         loss_val = enzyme_loss_wrapper(σ0, ρ0, β0, u0_vec, target_mat, window_length, dt)
         
-        return loss_val, L63Parameters{T}(gσ, gρ, gβ)
+        return loss_val, L63Parameters(gσ, gρ, gβ)
     end
 end
 
@@ -744,48 +744,9 @@ function compute_gradients_extended(
         return loss_val, L63Parameters{T}(gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ)
         
     else
-        # For other loss functions, use a generic extended wrapper
-        function enzyme_loss_wrapper_extended(σ::T, ρ::T, β::T, x_s::T, y_s::T, z_s::T, θ::T,
-                                            u0::AbstractVector{T}, 
-                                            target_trajectory::AbstractMatrix{T}, 
-                                            window_length::Int, dt::T) where {T}
-            
-            params = L63Parameters{T}(σ, ρ, β, x_s, y_s, z_s, θ)
-            u = similar(u0)
-            u .= u0
-            
-            # Integrate forward and collect predicted trajectory
-            predicted_trajectory = Matrix{T}(undef, window_length, 3)
-            
-            @inbounds for i in 1:window_length 
-                u = rk4_step(u, params, dt)
-                predicted_trajectory[i, :] .= u
-            end
-            
-            # Apply the user-provided loss function inline for Enzyme compatibility
-            # Note: target_trajectory includes initial state, so we skip the first row
-            target_for_loss = @view target_trajectory[2:end, :]  # Skip initial state
-            
-            # Call the loss function with proper views to ensure Enzyme can track derivatives
-            return loss_function(predicted_trajectory, target_for_loss)
-        end
-        
-        # Compute gradients using Enzyme
-        grads = Enzyme.autodiff(
-            Enzyme.Reverse,
-            Enzyme.Const(enzyme_loss_wrapper_extended),
-            Enzyme.Active(σ0), Enzyme.Active(ρ0), Enzyme.Active(β0),
-            Enzyme.Active(x_s0), Enzyme.Active(y_s0), Enzyme.Active(z_s0), Enzyme.Active(θ0),
-            Enzyme.Const(u0_vec), Enzyme.Const(target_mat),
-            Enzyme.Const(window_length), Enzyme.Const(dt)
-        )
-        
-        # Extract gradients and compute loss
-        G = grads[1]
-        gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ = G[1], G[2], G[3], G[4], G[5], G[6], G[7]
-        
-        loss_val = enzyme_loss_wrapper_extended(σ0, ρ0, β0, x_s0, y_s0, z_s0, θ0, u0_vec, target_mat, window_length, dt)
-        
-        return loss_val, L63Parameters{T}(gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ)
+        # For other loss functions, use a dedicated wrapper that works with Enzyme
+        # We need to handle this case more carefully for Enzyme compatibility
+        error("Loss function $(nameof(loss_function)) is not yet supported with extended parameters. " *
+              "Please use window_rmse, window_mae, or window_mse.")
     end
 end
