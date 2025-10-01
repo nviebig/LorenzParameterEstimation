@@ -13,17 +13,20 @@ using Printf: @sprintf
                 loss_function=window_rmse,
                 kwargs...)
 
-Modular training function using Enzyme.jl for gradient computation
-with Optimisers.jl for advanced optimization and Flux.jl for loss functions.
+Unified modular training function for all Lorenz-63 parameters using Enzyme.jl for gradient computation
+with Optimisers.jl for advanced optimization.
 
-This function provides:
-- Gradients via Enzyme.jl automatic differentiation
+This function automatically handles both classic (σ, ρ, β) and extended (x_s, y_s, z_s, θ) parameters.
+It provides:
+- Gradients via Enzyme.jl automatic differentiation for all 7 parameters
 - Support for a wide range of optimizers from Optimisers.jl
 - Fully modular loss functions - any function that takes (predicted::Matrix, target::Matrix) -> Real
 - Direct parameter optimization without neural network overhead
+- Selective parameter training (choose which parameters to update)
+- Full backward compatibility
 
 # Arguments
-- `params::L63Parameters`: Initial parameter guess
+- `params::L63Parameters`: Initial parameter guess (works with both classic and extended parameters)
 - `target_solution::L63Solution`: Target trajectory to fit
 - `optimizer_config::OptimizerConfig`: Optimizer configuration (see optimizers.jl)
 - `loss_function::Function`: Loss function to use - any function that takes (predicted, target) matrices and returns a scalar loss
@@ -41,14 +44,33 @@ This function provides:
 - `update_σ::Bool=true`: Whether to update σ parameter
 - `update_ρ::Bool=true`: Whether to update ρ parameter  
 - `update_β::Bool=true`: Whether to update β parameter
+- `update_x_s::Bool=false`: Whether to update x_s coordinate shift
+- `update_y_s::Bool=false`: Whether to update y_s coordinate shift
+- `update_z_s::Bool=false`: Whether to update z_s coordinate shift
+- `update_θ::Bool=false`: Whether to update θ parameter
 - `rng::AbstractRNG=Random.default_rng()`: Random number generator
 
-# Example
+# Examples
 ```julia
-# Quick training with default RMSE loss
-results = modular_train!(params, solution)
+# Classic usage (unchanged - trains σ, ρ, β)
+results = modular_train!(classic_params, solution)
 
-# Using MAE loss instead of RMSE
+# Train only coordinate shifts
+results = modular_train!(extended_params, solution, 
+                        update_σ=false, update_ρ=false, update_β=false,
+                        update_x_s=true, update_y_s=true, update_z_s=true)
+
+# Train only x_s shift
+results = modular_train!(extended_params, solution, 
+                        update_σ=false, update_ρ=false, update_β=false,
+                        update_x_s=true)
+
+# Train all parameters
+results = modular_train!(extended_params, solution,
+                        update_σ=true, update_ρ=true, update_β=true,
+                        update_x_s=true, update_y_s=true, update_z_s=true, update_θ=true)
+
+# Using different loss functions
 results = modular_train!(params, solution, 
                         loss_function=window_mae,
                         epochs=200)
@@ -59,17 +81,6 @@ results = modular_train!(params, solution,
                         optimizer_config=opt_config,
                         loss_function=weighted_window_loss(window_rmse, 1.5),
                         epochs=200)
-
-# Using adaptive loss for robustness
-results = modular_train!(params, solution,
-                        loss_function=adaptive_loss,
-                        epochs=300,
-                        early_stopping_patience=30)
-
-# Custom loss function
-custom_loss(pred, target) = mean(abs.(pred .- target).^1.5)  # L1.5 loss
-results = modular_train!(params, solution,
-                        loss_function=custom_loss)
 ```
 """
 function modular_train!(
@@ -89,10 +100,16 @@ function modular_train!(
     train_fraction::Real = 0.8,                         # Fraction of data for training (remaining for validation)
     shuffle::Bool = true,                               # Shuffle training data
     
-    # Parameter updates
+    # Parameter updates (classic parameters)
     update_σ::Bool = true,                              # Whether to update σ parameter
     update_ρ::Bool = true,                              # Whether to update ρ parameter
     update_β::Bool = true,                              # Whether to update β parameter
+    
+    # Parameter updates (extended parameters - auto-detected)
+    update_x_s::Bool = false,                           # Whether to update x_s coordinate shift
+    update_y_s::Bool = false,                           # Whether to update y_s coordinate shift
+    update_z_s::Bool = false,                           # Whether to update z_s coordinate shift
+    update_θ::Bool = false,                             # Whether to update θ parameter
 
     # Training control
     verbose::Bool = true,                               # Print training progress
@@ -126,11 +143,13 @@ function modular_train!(
     
     # Initialize parameters as NamedTuple for Optimisers.jl
     # Wrap scalars in arrays to make them mutable for Optimisers.jl
-    ps = (σ = [params.σ], ρ = [params.ρ], β = [params.β])           # Wrap in NamedTuple
+    ps = (σ = [params.σ], ρ = [params.ρ], β = [params.β],
+          x_s = [params.x_s], y_s = [params.y_s], z_s = [params.z_s], θ = [params.θ])  # All 7 parameters
     opt_state = Optimisers.setup(optimizer_config.optimizer, ps)    # Initialize optimizer state
     
-    # Parameter update mask (for masking gradients)
-    update_mask = (σ = update_σ, ρ = update_ρ, β = update_β)       # Which parameters to update
+    # Parameter update mask (for masking gradients) - all 7 parameters
+    update_mask = (σ = update_σ, ρ = update_ρ, β = update_β,
+                   x_s = update_x_s, y_s = update_y_s, z_s = update_z_s, θ = update_θ)
     
     # Training state
     metrics_history = NamedTuple[]                                 # To store (epoch, train_loss, val_loss, params)
@@ -140,13 +159,22 @@ function modular_train!(
     patience_counter = 0                                           # Early stopping counter
     
     if verbose
+        active_params = String[]
+        update_σ && push!(active_params, "σ")
+        update_ρ && push!(active_params, "ρ")
+        update_β && push!(active_params, "β")
+        update_x_s && push!(active_params, "x_s")
+        update_y_s && push!(active_params, "y_s")
+        update_z_s && push!(active_params, "z_s")
+        update_θ && push!(active_params, "θ")
+        
         println("   Optimizer: $(optimizer_config.name)")
         println("   Data: $(length(train_indices)) train windows, $(length(val_indices)) val windows")
         println("   Window size: $window_size, stride: $stride_val")
-        println("   Updating: σ=$update_σ, ρ=$update_ρ, β=$update_β")
+        println("   Updating: $(join(active_params, ", "))")
         println()
-        println("Epoch │   Train    │    Val     │      σ     │      ρ     │      β     │")
-        println("──────┼────────────┼────────────┼────────────┼────────────┼────────────┤")
+        println("Epoch │   Train    │    Val     │ Parameters")
+        println("──────┼────────────┼────────────┼────────────────────────────")
     end
     # Training loop
     for epoch in 1:epochs         
@@ -162,22 +190,28 @@ function modular_train!(
         
         for batch_windows in train_batches
             # Compute average gradients over the batch
-            batch_loss = zero(T).  # Initialize batch loss
-            avg_grads = (σ = zero(T), ρ = zero(T), β = zero(T))
+            batch_loss = zero(T)  # Initialize batch loss
+            avg_grads = (σ = zero(T), ρ = zero(T), β = zero(T), 
+                        x_s = zero(T), y_s = zero(T), z_s = zero(T), θ = zero(T))
             
             for window_start in batch_windows                                       # Process each window in the batch
-                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])        # Convert current ps to L63Parameters for gradient computation
-                loss_val, grads = compute_gradients_modular(
+                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
+                                                 ps.x_s[1], ps.y_s[1], ps.z_s[1], ps.θ[1])  # All 7 parameters
+                loss_val, grads = compute_gradients_extended(
                     current_params, 
                     target_solution, 
                     window_start, 
                     window_size, 
                     loss_function
-                )  # Compute loss and gradients via Enzyme
+                )  # Compute loss and gradients via Enzyme for all 7 parameters
                 batch_loss += loss_val # Accumulate batch loss
                 avg_grads = (σ = avg_grads.σ + grads.σ, 
                            ρ = avg_grads.ρ + grads.ρ, 
-                           β = avg_grads.β + grads.β)
+                           β = avg_grads.β + grads.β,
+                           x_s = avg_grads.x_s + grads.x_s,
+                           y_s = avg_grads.y_s + grads.y_s,
+                           z_s = avg_grads.z_s + grads.z_s,
+                           θ = avg_grads.θ + grads.θ)
             end
             
             # Average the gradients and loss
@@ -185,12 +219,20 @@ function modular_train!(
             batch_loss /= batch_size_actual
             avg_grads = (σ = avg_grads.σ / batch_size_actual,
                         ρ = avg_grads.ρ / batch_size_actual,
-                        β = avg_grads.β / batch_size_actual)
+                        β = avg_grads.β / batch_size_actual,
+                        x_s = avg_grads.x_s / batch_size_actual,
+                        y_s = avg_grads.y_s / batch_size_actual,
+                        z_s = avg_grads.z_s / batch_size_actual,
+                        θ = avg_grads.θ / batch_size_actual)
             
             # Apply parameter update mask and convert to array format
             masked_grads = (σ = [update_mask.σ ? avg_grads.σ : zero(T)],
                            ρ = [update_mask.ρ ? avg_grads.ρ : zero(T)],
-                           β = [update_mask.β ? avg_grads.β : zero(T)])
+                           β = [update_mask.β ? avg_grads.β : zero(T)],
+                           x_s = [update_mask.x_s ? avg_grads.x_s : zero(T)],
+                           y_s = [update_mask.y_s ? avg_grads.y_s : zero(T)],
+                           z_s = [update_mask.z_s ? avg_grads.z_s : zero(T)],
+                           θ = [update_mask.θ ? avg_grads.θ : zero(T)])
             
             # Update parameters using Optimisers.jl
             opt_state, ps = Optimisers.update(opt_state, ps, masked_grads)  # Update parameters using Optimisers.jl
@@ -203,8 +245,9 @@ function modular_train!(
         val_loss = if !isempty(val_indices) && epoch % eval_every == 0          # Only evaluate on validation set every eval_every epochs
             val_total = zero(T)                                                 # Initialize validation loss                        
             for window_start in val_indices                                     # Process each validation window               
-                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])    # Convert current ps to L63Parameters for gradient computation
-                loss_val, _ = compute_gradients_modular(                        # Compute loss (ignore gradients)
+                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
+                                                 ps.x_s[1], ps.y_s[1], ps.z_s[1], ps.θ[1])  # All 7 parameters
+                loss_val, _ = compute_gradients_extended(                       # Compute loss (ignore gradients)
                     current_params,                                             # Current parameters
                     target_solution,                                            # Target solution
                     window_start,                                               # Window start
@@ -219,7 +262,8 @@ function modular_train!(
         end
         
         # Record metrics
-        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])            # Current parameters
+        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
+                                         ps.x_s[1], ps.y_s[1], ps.z_s[1], ps.θ[1])  # All 7 parameters
         push!(param_history, current_params)                                    # Store parameter history
 
         metrics = (                                                             # Record metrics
@@ -243,8 +287,21 @@ function modular_train!(
         # Print progress
         if verbose
             val_str = ismissing(val_loss) ? "    —     " : @sprintf("%10.6f", val_loss)
-            println(@sprintf("%5d │ %10.6f │ %s │ %10.5f │ %10.5f │ %10.5f │",
-                   epoch, train_loss, val_str, current_params.σ, current_params.ρ, current_params.β))
+            param_str = ""
+            if update_σ || update_ρ || update_β
+                param_str *= @sprintf("σ=%.3f,ρ=%.3f,β=%.3f", current_params.σ, current_params.ρ, current_params.β)
+            end
+            if update_x_s || update_y_s || update_z_s
+                if length(param_str) > 0; param_str *= " "; end
+                param_str *= @sprintf("x_s=%.3f,y_s=%.3f,z_s=%.3f", current_params.x_s, current_params.y_s, current_params.z_s)
+            end
+            if update_θ
+                if length(param_str) > 0; param_str *= " "; end
+                param_str *= @sprintf("θ=%.3f", current_params.θ)
+            end
+            
+            println(@sprintf("%5d │ %10.6f │ %s │ %s",
+                   epoch, train_loss, val_str, param_str))
         end
         # Early stopping
         if patience_counter >= early_stopping_patience

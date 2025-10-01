@@ -546,3 +546,246 @@ function compute_gradients_modular(
         return loss_val, L63Parameters{T}(gσ, gρ, gβ)
     end
 end
+
+# ================================ Extended Enzyme Functions for 7 Parameters ================================
+
+"""
+    loss_function_enzyme_extended(σ, ρ, β, x_s, y_s, z_s, θ, u0, target_trajectory, window_length, dt)
+
+Extended enzyme-compatible wrapper for loss computation with all 7 parameters.
+"""
+@inline function loss_function_enzyme_extended(
+    σ::T, ρ::T, β::T, x_s::T, y_s::T, z_s::T, θ::T,    # All 7 parameters
+    u0::AbstractVector{T},                               # Initial state (3-vector)
+    target_trajectory::AbstractMatrix{T},                # Target trajectory (N×3 matrix)
+    window_length::Int,                                  # Number of integration steps
+    dt::T
+    ) where {T}
+    
+    params = L63Parameters{T}(σ, ρ, β, x_s, y_s, z_s, θ)  # Construct extended parameters
+    u = similar(u0)                                       # Initial state with same backend
+    u .= u0
+    
+    se = zero(T)                                          # Squared error accumulator
+    count = 0                                             # Count of comparisons
+    
+    @inbounds for i in 1:window_length 
+        u = rk4_step(u, params, dt)
+        
+        # Compare to target at row i+1 (since target includes starting state)
+        for j in 1:3
+            diff = u[j] - target_trajectory[i+1, j]
+            se += diff * diff
+            count += 1
+        end
+    end
+    
+    return sqrt(se / count)  # RMSE
+end
+
+"""
+    mae_enzyme_function_extended(σ, ρ, β, x_s, y_s, z_s, θ, u0, target_trajectory, window_length, dt)
+
+Extended MAE enzyme function with all 7 parameters.
+"""
+@inline function mae_enzyme_function_extended(
+    σ::T, ρ::T, β::T, x_s::T, y_s::T, z_s::T, θ::T,    # All 7 parameters
+    u0::AbstractVector{T},                               # Initial state (3-vector)
+    target_trajectory::AbstractMatrix{T},                # Target trajectory (N×3 matrix)
+    window_length::Int,                                  # Number of integration steps
+    dt::T
+    ) where {T}
+    
+    params = L63Parameters{T}(σ, ρ, β, x_s, y_s, z_s, θ)  # Construct extended parameters
+    u = similar(u0)                                       # Initial state with same backend
+    u .= u0
+    
+    ae = zero(T)                                          # Absolute error accumulator
+    count = 0                                             # Count of comparisons
+    
+    @inbounds for i in 1:window_length 
+        u = rk4_step(u, params, dt)
+        
+        # Compare to target at row i+1 (since target includes starting state)
+        for j in 1:3
+            diff = abs(u[j] - target_trajectory[i+1, j])
+            ae += diff
+            count += 1
+        end
+    end
+    
+    return ae / count  # MAE
+end
+
+"""
+    mse_enzyme_function_extended(σ, ρ, β, x_s, y_s, z_s, θ, u0, target_trajectory, window_length, dt)
+
+Extended MSE enzyme function with all 7 parameters.
+"""
+@inline function mse_enzyme_function_extended(
+    σ::T, ρ::T, β::T, x_s::T, y_s::T, z_s::T, θ::T,    # All 7 parameters
+    u0::AbstractVector{T},                               # Initial state (3-vector)
+    target_trajectory::AbstractMatrix{T},                # Target trajectory (N×3 matrix)
+    window_length::Int,                                  # Number of integration steps
+    dt::T
+    ) where {T}
+    
+    params = L63Parameters{T}(σ, ρ, β, x_s, y_s, z_s, θ)  # Construct extended parameters
+    u = similar(u0)                                       # Initial state with same backend
+    u .= u0
+    
+    se = zero(T)                                          # Squared error accumulator
+    count = 0                                             # Count of comparisons
+    
+    @inbounds for i in 1:window_length 
+        u = rk4_step(u, params, dt)
+        
+        # Compare to target at row i+1 (since target includes starting state)
+        for j in 1:3
+            diff = u[j] - target_trajectory[i+1, j]
+            se += diff * diff
+            count += 1
+        end
+    end
+    
+    return se / count  # MSE
+end
+
+"""
+    compute_gradients_extended(params::L63Parameters, target_solution::L63Solution, 
+                              window_start::Int, window_length::Int, loss_function::Function)
+
+Compute gradients of any loss function with respect to all 7 extended parameters using Enzyme AD.
+
+# Arguments
+- `params`: Extended parameters to evaluate (σ, ρ, β, x_s, y_s, z_s, θ)
+- `target_solution`: Target trajectory
+- `window_start`: Starting index in target trajectory
+- `window_length`: Number of integration steps  
+- `loss_function`: Loss function that takes (predicted::Matrix, target::Matrix) -> Real
+
+# Returns
+- `(loss_value, gradients)` where gradients is an L63Parameters object with all 7 gradients
+"""
+function compute_gradients_extended(
+    params::L63Parameters{T},                   # Extended parameters to evaluate
+    target_solution::L63Solution{T},            # Target trajectory
+    window_start::Int, window_length::Int,      # Number of integration steps
+    loss_function::Function                     # Loss function to use
+    ) where {T}
+    
+    # Extract window data
+    u0 = target_solution[window_start]                          # Initial state at window start
+    window_end = window_start + window_length                   # End index (exclusive)
+    target_window = target_solution.u[window_start:window_end, :] # Target states for the window
+    dt = target_solution.system.dt                             # Time step
+    
+    # Convert to compatible types
+    σ0, ρ0, β0 = T(params.σ), T(params.ρ), T(params.β)         # Classic parameters
+    x_s0, y_s0, z_s0, θ0 = T(params.x_s), T(params.y_s), T(params.z_s), T(params.θ)  # Extended parameters
+    u0_vec = u0 isa Vector ? u0 : Vector{T}(u0)                # Ensure u0 is a Vector{T}
+    target_mat = target_window isa Matrix ? target_window : Matrix{T}(target_window) # Ensure target is Matrix{T}
+    
+    # For now, use specific loss function implementations that Enzyme can handle
+    if loss_function === window_rmse
+        # Use the extended enzyme function for RMSE
+        grads = Enzyme.autodiff(
+            Enzyme.Reverse,                                     # Reverse mode AD
+            Enzyme.Const(loss_function_enzyme_extended),        # Function to differentiate
+            Enzyme.Active(σ0),                                  # Active variable
+            Enzyme.Active(ρ0),                                  # Active variable
+            Enzyme.Active(β0),                                  # Active variable
+            Enzyme.Active(x_s0),                                # Active variable
+            Enzyme.Active(y_s0),                                # Active variable
+            Enzyme.Active(z_s0),                                # Active variable
+            Enzyme.Active(θ0),                                  # Active variable
+            Enzyme.Const(u0_vec),                               # Constant input
+            Enzyme.Const(target_mat),                           # Constant input    
+            Enzyme.Const(window_length),                        # Constant input
+            Enzyme.Const(dt)                                    # Constant input
+        )
+        
+        G = grads[1]
+        gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ = G[1], G[2], G[3], G[4], G[5], G[6], G[7]
+        loss_val = loss_function_enzyme_extended(σ0, ρ0, β0, x_s0, y_s0, z_s0, θ0, u0_vec, target_mat, window_length, dt)
+        
+        return loss_val, L63Parameters{T}(gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ)
+        
+    elseif loss_function === window_mae
+        grads = Enzyme.autodiff(
+            Enzyme.Reverse,
+            Enzyme.Const(mae_enzyme_function_extended),
+            Enzyme.Active(σ0), Enzyme.Active(ρ0), Enzyme.Active(β0),
+            Enzyme.Active(x_s0), Enzyme.Active(y_s0), Enzyme.Active(z_s0), Enzyme.Active(θ0),
+            Enzyme.Const(u0_vec), Enzyme.Const(target_mat),
+            Enzyme.Const(window_length), Enzyme.Const(dt)
+        )
+        
+        G = grads[1]
+        gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ = G[1], G[2], G[3], G[4], G[5], G[6], G[7]
+        loss_val = mae_enzyme_function_extended(σ0, ρ0, β0, x_s0, y_s0, z_s0, θ0, u0_vec, target_mat, window_length, dt)
+        
+        return loss_val, L63Parameters{T}(gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ)
+        
+    elseif loss_function === window_mse
+        grads = Enzyme.autodiff(
+            Enzyme.Reverse,
+            Enzyme.Const(mse_enzyme_function_extended),
+            Enzyme.Active(σ0), Enzyme.Active(ρ0), Enzyme.Active(β0),
+            Enzyme.Active(x_s0), Enzyme.Active(y_s0), Enzyme.Active(z_s0), Enzyme.Active(θ0),
+            Enzyme.Const(u0_vec), Enzyme.Const(target_mat),
+            Enzyme.Const(window_length), Enzyme.Const(dt)
+        )
+        
+        G = grads[1]
+        gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ = G[1], G[2], G[3], G[4], G[5], G[6], G[7]
+        loss_val = mse_enzyme_function_extended(σ0, ρ0, β0, x_s0, y_s0, z_s0, θ0, u0_vec, target_mat, window_length, dt)
+        
+        return loss_val, L63Parameters{T}(gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ)
+        
+    else
+        # For other loss functions, use a generic extended wrapper
+        function enzyme_loss_wrapper_extended(σ::T, ρ::T, β::T, x_s::T, y_s::T, z_s::T, θ::T,
+                                            u0::AbstractVector{T}, 
+                                            target_trajectory::AbstractMatrix{T}, 
+                                            window_length::Int, dt::T) where {T}
+            
+            params = L63Parameters{T}(σ, ρ, β, x_s, y_s, z_s, θ)
+            u = similar(u0)
+            u .= u0
+            
+            # Integrate forward and collect predicted trajectory
+            predicted_trajectory = Matrix{T}(undef, window_length, 3)
+            
+            @inbounds for i in 1:window_length 
+                u = rk4_step(u, params, dt)
+                predicted_trajectory[i, :] .= u
+            end
+            
+            # Apply the user-provided loss function inline for Enzyme compatibility
+            # Note: target_trajectory includes initial state, so we skip the first row
+            target_for_loss = @view target_trajectory[2:end, :]  # Skip initial state
+            
+            # Call the loss function with proper views to ensure Enzyme can track derivatives
+            return loss_function(predicted_trajectory, target_for_loss)
+        end
+        
+        # Compute gradients using Enzyme
+        grads = Enzyme.autodiff(
+            Enzyme.Reverse,
+            Enzyme.Const(enzyme_loss_wrapper_extended),
+            Enzyme.Active(σ0), Enzyme.Active(ρ0), Enzyme.Active(β0),
+            Enzyme.Active(x_s0), Enzyme.Active(y_s0), Enzyme.Active(z_s0), Enzyme.Active(θ0),
+            Enzyme.Const(u0_vec), Enzyme.Const(target_mat),
+            Enzyme.Const(window_length), Enzyme.Const(dt)
+        )
+        
+        # Extract gradients and compute loss
+        G = grads[1]
+        gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ = G[1], G[2], G[3], G[4], G[5], G[6], G[7]
+        
+        loss_val = enzyme_loss_wrapper_extended(σ0, ρ0, β0, x_s0, y_s0, z_s0, θ0, u0_vec, target_mat, window_length, dt)
+        
+        return loss_val, L63Parameters{T}(gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ)
+    end
+end
