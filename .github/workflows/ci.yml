@@ -1,0 +1,191 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.9'   # Minimum supported version
+          - '1.10'  # Current stable
+          - 'nightly'  # Latest development
+        os:
+          - ubuntu-latest
+          - macOS-latest
+          - windows-latest
+        exclude:
+          # Exclude nightly on Windows to reduce CI load
+          - os: windows-latest
+            version: 'nightly'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: julia-actions/setup-julia@v1
+      with:
+        version: ${{ matrix.version }}
+        
+    - uses: julia-actions/cache@v1
+    
+    - name: Install dependencies
+      run: |
+        julia --project=. -e 'using Pkg; Pkg.instantiate()'
+        julia --project=. -e 'using Pkg; Pkg.precompile()'
+    
+    - name: Run tests
+      run: julia --project=. -e 'using Pkg; Pkg.test()'
+      
+    - uses: julia-actions/julia-processcoverage@v1
+      if: matrix.version == '1.10' && matrix.os == 'ubuntu-latest'
+      
+    - uses: codecov/codecov-action@v3
+      if: matrix.version == '1.10' && matrix.os == 'ubuntu-latest'
+      with:
+        file: lcov.info
+
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: julia-actions/setup-julia@v1
+      with:
+        version: '1.10'
+        
+    - name: Check for doc build capability
+      run: |
+        julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+      continue-on-error: true
+      
+    - name: Build documentation
+      run: |
+        julia --project=docs docs/make.jl
+      continue-on-error: true
+
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: julia-actions/setup-julia@v1
+      with:
+        version: '1.10'
+        
+    - uses: julia-actions/cache@v1
+    
+    - name: Install dependencies
+      run: |
+        julia --project=. -e 'using Pkg; Pkg.instantiate()'
+        julia --project=. -e 'using Pkg; Pkg.precompile()'
+    
+    - name: Run benchmarks
+      run: |
+        julia --project=. -e 'using LorenzParameterEstimation; include("test/benchmarks.jl")'
+      continue-on-error: true  # Don't fail CI if benchmarks are slow
+      
+    - name: Upload benchmark results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: benchmark-results.txt
+      continue-on-error: true
+
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: julia-actions/setup-julia@v1
+      with:
+        version: '1.10'
+        
+    - uses: julia-actions/cache@v1
+    
+    - name: Install dependencies
+      run: |
+        julia --project=. -e 'using Pkg; Pkg.instantiate()'
+        julia --project=. -e 'using Pkg; Pkg.precompile()'
+    
+    - name: Run Aqua.jl quality checks
+      run: |
+        julia --project=. -e 'using LorenzParameterEstimation, Aqua; Aqua.test_all(LorenzParameterEstimation)'
+      continue-on-error: true  # Don't fail CI for quality issues, just report
+      
+    - name: Check for formatting issues
+      run: |
+        julia --project=. -e 'using JuliaFormatter; format(".", verbose=true, overwrite=false) || exit(1)'
+      continue-on-error: true
+
+  compatibility:
+    name: Compatibility Check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: julia-actions/setup-julia@v1
+      with:
+        version: '1.10'
+        
+    - name: Check Project.toml compatibility
+      run: |
+        julia -e 'using Pkg; Pkg.activate("."); Pkg.instantiate(); Pkg.status()'
+        
+    - name: Test minimal dependencies
+      run: |
+        julia --project=. -e 'using Pkg; Pkg.test()'
+
+  performance-regression:
+    name: Performance Regression
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history for comparison
+    
+    - uses: julia-actions/setup-julia@v1
+      with:
+        version: '1.10'
+        
+    - uses: julia-actions/cache@v1
+    
+    - name: Install dependencies
+      run: |
+        julia --project=. -e 'using Pkg; Pkg.instantiate()'
+        julia --project=. -e 'using Pkg; Pkg.precompile()'
+    
+    - name: Run performance tests (current)
+      run: |
+        julia --project=. -e 'include("test/benchmarks.jl")' > current_benchmarks.txt
+      continue-on-error: true
+      
+    - name: Checkout main branch
+      run: git checkout main
+      
+    - name: Run performance tests (main)
+      run: |
+        julia --project=. -e 'using Pkg; Pkg.instantiate(); include("test/benchmarks.jl")' > main_benchmarks.txt
+      continue-on-error: true
+      
+    - name: Compare performance
+      run: |
+        echo "Performance comparison between main and current PR:"
+        echo "Main branch results:"
+        cat main_benchmarks.txt || echo "No main benchmark results"
+        echo -e "\nCurrent PR results:"
+        cat current_benchmarks.txt || echo "No current benchmark results"
+      continue-on-error: true
