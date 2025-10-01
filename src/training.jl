@@ -4,7 +4,7 @@ import Optimisers
 import Random
 using Printf: @sprintf
 
-# ================================ Modular Training (Enzyme-based) ================================
+# ================================ Modular Training  ================================
 
 """
     modular_train!(params, 
@@ -124,9 +124,10 @@ function modular_train!(
     train_indices = window_starts[indices[1:train_count]]
     val_indices = train_count < n_windows ? window_starts[indices[train_count + 1:end]] : Int[]
     
-    # Initialize simple gradient descent optimizer (for now, bypassing complex Optimisers.jl setup)
-    learning_rate = T(optimizer_config.learning_rate)
-    ps = (σ = params.σ, ρ = params.ρ, β = params.β)
+    # Initialize parameters as NamedTuple for Optimisers.jl
+    # Wrap scalars in arrays to make them mutable for Optimisers.jl
+    ps = (σ = [params.σ], ρ = [params.ρ], β = [params.β])
+    opt_state = Optimisers.setup(optimizer_config.optimizer, ps)
     
     # Parameter update mask (for masking gradients)
     update_mask = (σ = update_σ, ρ = update_ρ, β = update_β)
@@ -165,9 +166,11 @@ function modular_train!(
             avg_grads = (σ = zero(T), ρ = zero(T), β = zero(T))
             
             for window_start in batch_windows
-                current_params = L63Parameters{T}(ps.σ, ps.ρ, ps.β)
+                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
                 loss_val, grads = compute_gradients_modular(current_params, target_solution, 
-                                                          window_start, window_size, loss_function)
+                                                          window_start, 
+                                                          window_size, 
+                                                          loss_function)
                 batch_loss += loss_val
                 avg_grads = (σ = avg_grads.σ + grads.σ, 
                            ρ = avg_grads.ρ + grads.ρ, 
@@ -181,15 +184,13 @@ function modular_train!(
                         ρ = avg_grads.ρ / batch_size_actual,
                         β = avg_grads.β / batch_size_actual)
             
-            # Apply parameter update mask
-            masked_grads = (σ = update_mask.σ ? avg_grads.σ : zero(T),
-                           ρ = update_mask.ρ ? avg_grads.ρ : zero(T),
-                           β = update_mask.β ? avg_grads.β : zero(T))
+            # Apply parameter update mask and convert to array format
+            masked_grads = (σ = [update_mask.σ ? avg_grads.σ : zero(T)],
+                           ρ = [update_mask.ρ ? avg_grads.ρ : zero(T)],
+                           β = [update_mask.β ? avg_grads.β : zero(T)])
             
-            # Simple gradient descent update
-            ps = (σ = ps.σ - learning_rate * masked_grads.σ,
-                  ρ = ps.ρ - learning_rate * masked_grads.ρ,
-                  β = ps.β - learning_rate * masked_grads.β)
+            # Update parameters using Optimisers.jl
+            opt_state, ps = Optimisers.update(opt_state, ps, masked_grads)
             epoch_loss += batch_loss
         end
         
@@ -199,7 +200,7 @@ function modular_train!(
         val_loss = if !isempty(val_indices) && epoch % eval_every == 0
             val_total = zero(T)
             for window_start in val_indices
-                current_params = L63Parameters{T}(ps.σ, ps.ρ, ps.β)
+                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
                 loss_val, _ = compute_gradients_modular(current_params, target_solution, 
                                                       window_start, window_size, loss_function)
                 val_total += loss_val
@@ -210,7 +211,7 @@ function modular_train!(
         end
         
                 # Record metrics
-        current_params = L63Parameters{T}(ps.σ, ps.ρ, ps.β)
+        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
         push!(param_history, current_params)
         
         metrics = (
@@ -367,7 +368,7 @@ function train!(
                 
                 # Convert current ps to L63Parameters for gradient computation
                 current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
-                loss_val, gradients = compute_gradients(current_params, target_solution, window_start, window_size)
+                loss_val, gradients = compute_gradients(current_params, target_solution, window_start, window_size, loss_fn)
                 
                 batch_loss += loss_val
                 avg_grads = (σ = avg_grads.σ + gradients.σ, 
@@ -416,7 +417,7 @@ function train!(
             for window_idx in val_indices
                 window_start = (window_idx - 1) * stride + 1
                 current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1])
-                loss_val, _ = compute_gradients(current_params, target_solution, window_start, window_size)
+                loss_val, _ = compute_gradients(current_params, target_solution, window_start, window_size, loss_fn)
                 val_total += loss_val
             end
             val_total / length(val_indices)
