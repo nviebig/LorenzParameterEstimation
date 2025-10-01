@@ -3,20 +3,33 @@
 """
     lorenz_rhs(u, params::L63Parameters)
 
-Compute the right-hand side of the Lorenz-63 system.
+Compute the right-hand side of the extended Lorenz-63 system with coordinate shifts and theta parameter.
 
 # Arguments
 - `u`: State vector [x, y, z]
-- `params`: System parameters
+- `params`: System parameters (including σ, ρ, β, x_s, y_s, z_s, θ)
 
 # Returns
 - `du`: Time derivatives [dx/dt, dy/dt, dz/dt]
+
+# Extended System
+- dx/dt = σ((y - y_s) - (x - x_s))
+- dy/dt = θ(x - x_s)(ρ - (z - z_s)) - (y - y_s)  
+- dz/dt = (x - x_s)(y - y_s) - β(z - z_s)
 """
 function lorenz_rhs(u, params::L63Parameters{T}) where {T}
     x, y, z = u[1], u[2], u[3]
-    dx = params.σ * (y - x)
-    dy = x * (params.ρ - z) - y 
-    dz = x * y - params.β * z
+    
+    # Apply coordinate shifts
+    x_shifted = x - params.x_s
+    y_shifted = y - params.y_s
+    z_shifted = z - params.z_s
+    
+    # Extended Lorenz equations with theta parameter
+    dx = params.σ * (y_shifted - x_shifted)
+    dy = params.θ * x_shifted * (params.ρ - z_shifted) - y_shifted
+    dz = x_shifted * y_shifted - params.β * z_shifted
+    
     return (dx, dy, dz)
 end
 
