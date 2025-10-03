@@ -16,6 +16,15 @@ using Printf: @sprintf
 Unified modular training function for all Lorenz-63 parameters using Enzyme.jl for gradient computation
 with Optimisers.jl for advanced optimization.
 
+**Theoretical Approach**: Implements mini-batch stochastic gradient descent (SGD) specifically designed for 
+trajectory-based parameter estimation. Instead of using independent data points, this function uses overlapping 
+trajectory windows as training examples, computes gradients for each window, and averages them across batches 
+before parameter updates. This provides stable gradients and efficient computation for dynamical systems.
+
+**Note**: Training loss is computed as the average over all training windows per epoch. Validation loss is 
+computed every `eval_every` epochs and the last computed value is carried forward for epochs where validation 
+is not performed (to avoid gaps in loss history for plotting).
+
 This function automatically handles both classic (σ, ρ, β) and extended (x_s, y_s, z_s, θ) parameters.
 It provides:
 - Gradients via Enzyme.jl automatic differentiation for all 7 parameters
@@ -153,10 +162,13 @@ function modular_train!(
     
     # Training state
     metrics_history = NamedTuple[]                                 # To store (epoch, train_loss, val_loss, params)
+    train_loss_history = T[]                                       # To store training loss per epoch
+    val_loss_history = Union{T, Missing}[]                         # To store validation loss per epoch
     param_history = L63Parameters{T}[params]                       # To store parameter history
     best_params = params                                           # Best parameters found                
     best_metric = convert(T, Inf)                                  # Best metric (lower is better)
     patience_counter = 0                                           # Early stopping counter
+    last_val_loss = missing                                        # Track last computed validation loss (start with missing)
     
     if verbose
         active_params = String[]
@@ -180,6 +192,7 @@ function modular_train!(
     for epoch in 1:epochs         
         # Training phase
         epoch_loss = zero(T)    # Initialize epoch loss
+        total_windows_processed = 0  # Count actual windows processed
         
         # Shuffle training windows
         current_train_indices = shuffle ? Random.shuffle(rng, copy(train_indices)) : train_indices  # Shuffle if specified
@@ -212,6 +225,7 @@ function modular_train!(
                            y_s = avg_grads.y_s + grads.y_s,
                            z_s = avg_grads.z_s + grads.z_s,
                            θ = avg_grads.θ + grads.θ)
+                total_windows_processed += 1  # Count this window
             end
             
             # Average the gradients and loss
@@ -236,13 +250,13 @@ function modular_train!(
             
             # Update parameters using Optimisers.jl
             opt_state, ps = Optimisers.update(opt_state, ps, masked_grads)  # Update parameters using Optimisers.jl
-            epoch_loss += batch_loss
+            epoch_loss += batch_loss * batch_size_actual  # Add the actual loss (not averaged)
         end
 
-        train_loss = epoch_loss / length(train_batches)  # Average training loss over epoch
+        train_loss = epoch_loss / total_windows_processed  # Average training loss over all windows actually processed
 
         # Validation phase
-        val_loss = if !isempty(val_indices) && epoch % eval_every == 0          # Only evaluate on validation set every eval_every epochs
+        if !isempty(val_indices) && epoch % eval_every == 0          # Only evaluate on validation set every eval_every epochs
             val_total = zero(T)                                                 # Initialize validation loss                        
             for window_start in val_indices                                     # Process each validation window               
                 current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
@@ -256,15 +270,16 @@ function modular_train!(
                 )
                 val_total += loss_val                                           # Accumulate validation loss               
             end
-            val_total / length(val_indices)                                     # Average validation loss
-        else
-            missing                                                             # No validation this epoch                          
+            last_val_loss = val_total / length(val_indices)                    # Compute and store validation loss
         end
+        val_loss = last_val_loss                                               # Use last computed validation loss (or missing for first epoch)
         
         # Record metrics
-        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
-                                         ps.x_s[1], ps.y_s[1], ps.z_s[1], ps.θ[1])  # All 7 parameters
+        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], ps.x_s[1], ps.y_s[1], ps.z_s[1], ps.θ[1])  # All 7 parameters
+        
         push!(param_history, current_params)                                    # Store parameter history
+        push!(train_loss_history, train_loss)                                   # Store training loss
+        push!(val_loss_history, val_loss)                                       # Store validation loss
 
         metrics = (                                                             # Record metrics
             epoch = epoch,                                                      # Current epoch
@@ -272,6 +287,7 @@ function modular_train!(
             val_loss = val_loss,                                                # Validation loss (or missing)     
             params = current_params                                             # Current parameters      
         )
+        
         push!(metrics_history, metrics)                                         # Store metrics history
         
         # Update best model
@@ -325,6 +341,8 @@ function modular_train!(
         best_params = best_params,
         metrics_history = metrics_history,
         param_history = param_history,
+        train_loss = train_loss_history,
+        val_loss = val_loss_history,
         optimizer_config = optimizer_config,
         loss_function = loss_function
     )
