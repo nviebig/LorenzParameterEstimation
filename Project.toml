@@ -4,6 +4,7 @@ authors = ["Niklas Viebig <niklasviebig@gmail.com>"]
 version = "0.1.0"
 
 [deps]
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
@@ -22,6 +23,7 @@ StatsPlots = "f3b207a7-027a-5e70-b257-86293d7955fd"
 LorenzVisualizationExt = ["Plots", "Images", "FileIO"]
 
 [compat]
+DataFrames = "1.8.0"
 DifferentialEquations = "7.16.1"
 FileIO = "1.17.0"
 Images = "0.26.2"

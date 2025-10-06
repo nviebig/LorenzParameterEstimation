@@ -32,3 +32,36 @@ Create an animated training evolution. Implemented in the
 `LorenzVisualizationExt` extension.
 """
 function create_training_gif end
+
+"""
+    plot_loss_evolution(metrics::TrainingMetrics; kwargs...)
+
+Plot loss evolution showing individual window losses, batch averages, and epoch averages.
+Implemented in the `LorenzVisualizationExt` extension.
+"""
+function plot_loss_evolution end
+
+"""
+    plot_gradient_evolution(metrics::TrainingMetrics; kwargs...)
+
+Plot gradient evolution showing individual window gradients vs averaged gradients.
+Demonstrates chaotic individual behavior vs meaningful averaged information.
+Implemented in the `LorenzVisualizationExt` extension.
+"""
+function plot_gradient_evolution end
+
+"""
+    plot_gradient_scatter(metrics::TrainingMetrics, batch_range=nothing; kwargs...)
+
+Create scatter plots of individual gradients within batches to show chaotic behavior.
+Implemented in the `LorenzVisualizationExt` extension.
+"""
+function plot_gradient_scatter end
+
+"""
+    create_gradient_chaos_gif(metrics::TrainingMetrics; kwargs...)
+
+Create animated visualization showing how individual chaotic gradients average to meaningful information.
+Implemented in the `LorenzVisualizationExt` extension.
+"""
+function create_gradient_chaos_gif end

@@ -7,6 +7,142 @@ using Enzyme  # For compute_gradients() function
 # All loss functions work with the modular_train!() function,
 # while compute_gradients() is used by both train!() and modular_train!() functions.
 
+# ================================ Tracking Structures ================================
+
+"""
+    TrainingMetrics
+
+Structure to store detailed training metrics including individual window losses/gradients
+and batch averages. Useful for analyzing chaotic behavior vs meaningful averaged information.
+"""
+mutable struct TrainingMetrics{T <: Real}
+    # Loss tracking
+    individual_losses::Vector{T}                    # Loss for each individual window
+    batch_losses::Vector{T}                        # Average loss per batch
+    epoch_losses::Vector{T}                        # Average loss per epoch
+    
+    # Gradient tracking for σ parameter
+    individual_gradients_σ::Vector{T}              # σ gradient for each window
+    batch_gradients_σ::Vector{T}                   # Average σ gradient per batch
+    epoch_gradients_σ::Vector{T}                   # Average σ gradient per epoch
+    
+    # Gradient tracking for ρ parameter  
+    individual_gradients_ρ::Vector{T}              # ρ gradient for each window
+    batch_gradients_ρ::Vector{T}                   # Average ρ gradient per batch
+    epoch_gradients_ρ::Vector{T}                   # Average ρ gradient per epoch
+    
+    # Gradient tracking for β parameter
+    individual_gradients_β::Vector{T}              # β gradient for each window
+    batch_gradients_β::Vector{T}                   # Average β gradient per batch
+    epoch_gradients_β::Vector{T}                   # Average β gradient per epoch
+    
+    # Additional metadata
+    batch_indices::Vector{Int}                     # Which batch each individual measurement belongs to
+    window_indices::Vector{Int}                    # Window start index for each measurement
+    
+    function TrainingMetrics{T}() where {T <: Real}
+        new{T}(T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], Int[], Int[])
+    end
+end
+
+TrainingMetrics() = TrainingMetrics{Float64}()
+
+"""
+    reset_metrics!(metrics::TrainingMetrics)
+
+Clear all stored metrics, useful for starting fresh training runs.
+"""
+function reset_metrics!(metrics::TrainingMetrics)
+    empty!(metrics.individual_losses)
+    empty!(metrics.batch_losses)
+    empty!(metrics.epoch_losses)
+    empty!(metrics.individual_gradients_σ)
+    empty!(metrics.batch_gradients_σ)
+    empty!(metrics.epoch_gradients_σ)
+    empty!(metrics.individual_gradients_ρ)
+    empty!(metrics.batch_gradients_ρ)
+    empty!(metrics.epoch_gradients_ρ)
+    empty!(metrics.individual_gradients_β)
+    empty!(metrics.batch_gradients_β)
+    empty!(metrics.epoch_gradients_β)
+    empty!(metrics.batch_indices)
+    empty!(metrics.window_indices)
+    return metrics
+end
+
+"""
+    record_window_metrics!(metrics::TrainingMetrics, loss_val, gradients::L63Parameters, 
+                          batch_idx::Int, window_start::Int)
+
+Record loss and gradient values for an individual window.
+"""
+function record_window_metrics!(metrics::TrainingMetrics, loss_val, gradients::L63Parameters, 
+                                batch_idx::Int, window_start::Int)
+    push!(metrics.individual_losses, loss_val)
+    push!(metrics.individual_gradients_σ, gradients.σ)
+    push!(metrics.individual_gradients_ρ, gradients.ρ)
+    push!(metrics.individual_gradients_β, gradients.β)
+    push!(metrics.batch_indices, batch_idx)
+    push!(metrics.window_indices, window_start)
+    return metrics
+end
+
+"""
+    record_batch_metrics!(metrics::TrainingMetrics, batch_loss, avg_gradients::L63Parameters)
+
+Record averaged loss and gradients for a batch.
+"""
+function record_batch_metrics!(metrics::TrainingMetrics, batch_loss, avg_gradients::L63Parameters)
+    push!(metrics.batch_losses, batch_loss)
+    push!(metrics.batch_gradients_σ, avg_gradients.σ)
+    push!(metrics.batch_gradients_ρ, avg_gradients.ρ)
+    push!(metrics.batch_gradients_β, avg_gradients.β)
+    return metrics
+end
+
+"""
+    record_epoch_metrics!(metrics::TrainingMetrics, epoch_loss, avg_gradients::L63Parameters)
+
+Record averaged loss and gradients for an epoch.
+"""
+function record_epoch_metrics!(metrics::TrainingMetrics, epoch_loss, avg_gradients::L63Parameters)
+    push!(metrics.epoch_losses, epoch_loss)
+    push!(metrics.epoch_gradients_σ, avg_gradients.σ)
+    push!(metrics.epoch_gradients_ρ, avg_gradients.ρ)
+    push!(metrics.epoch_gradients_β, avg_gradients.β)
+    return metrics
+end
+
+"""
+    compute_gradient_statistics(metrics::TrainingMetrics, batch_idx::Int)
+
+Compute statistics about gradient variability within a batch to demonstrate
+chaotic individual behavior vs meaningful averages.
+"""
+function compute_gradient_statistics(metrics::TrainingMetrics, batch_idx::Int)
+    # Find indices for this batch
+    batch_mask = metrics.batch_indices .== batch_idx
+    
+    if !any(batch_mask)
+        return nothing
+    end
+    
+    # Extract gradients for this batch
+    σ_grads = metrics.individual_gradients_σ[batch_mask]
+    ρ_grads = metrics.individual_gradients_ρ[batch_mask]
+    β_grads = metrics.individual_gradients_β[batch_mask]
+    
+    # Compute statistics
+    stats = (
+        σ = (mean = mean(σ_grads), std = std(σ_grads), min = minimum(σ_grads), max = maximum(σ_grads)),
+        ρ = (mean = mean(ρ_grads), std = std(ρ_grads), min = minimum(ρ_grads), max = maximum(ρ_grads)),
+        β = (mean = mean(β_grads), std = std(β_grads), min = minimum(β_grads), max = maximum(β_grads)),
+        count = sum(batch_mask)
+    )
+    
+    return stats
+end
+
 # ================================ Enzyme-compatible helper functions ================================
 # These functions are defined at module level to avoid scoping issues with Enzyme
 
@@ -355,6 +491,33 @@ Enzyme-compatible wrapper for loss computation with scalar parameters.
     end
     
     return sqrt(se / count)
+end
+
+"""
+    compute_gradients_with_tracking(params::L63Parameters, target_solution::L63Solution, 
+                                   window_start::Int, window_length::Int, 
+                                   loss_function::Function = window_rmse;
+                                   metrics::Union{TrainingMetrics, Nothing} = nothing,
+                                   batch_idx::Int = 0)
+
+Compute gradients with optional tracking for detailed analysis.
+If metrics is provided, records individual window loss and gradients.
+"""
+function compute_gradients_with_tracking(params::L63Parameters{T}, target_solution::L63Solution{T},
+                                        window_start::Int, window_length::Int, 
+                                        loss_function::Function = window_rmse;
+                                        metrics::Union{TrainingMetrics, Nothing} = nothing,
+                                        batch_idx::Int = 0) where {T}
+    
+    # Use the regular compute_gradients function
+    loss_val, gradients = compute_gradients(params, target_solution, window_start, window_length, loss_function)
+    
+    # Record metrics if requested
+    if metrics !== nothing
+        record_window_metrics!(metrics, loss_val, gradients, batch_idx, window_start)
+    end
+    
+    return loss_val, gradients
 end
 
 """
