@@ -13,6 +13,10 @@ export modular_train!
 export window_mae, window_mse, weighted_window_loss, probabilistic_loss, adaptive_loss
 # Note: huber_loss, mae, mse are implemented internally - not re-exported from Flux
 
+# Training metrics and tracking
+export TrainingMetrics, reset_metrics!, record_window_metrics!, record_batch_metrics!, 
+       record_epoch_metrics!, compute_gradient_statistics, compute_gradients_with_tracking
+
 # Optimizer configurations
 export OptimizerConfig
 export adam_config, sgd_config, adamw_config, adagrad_config, rmsprop_config
@@ -26,7 +30,8 @@ export lorenz_rhs, classic_params, stable_params, parameter_error
 export with_coordinate_shifts, with_theta, classic_lorenz, has_coordinate_shifts, has_theta_modification, parameter_summary
 
 # Visualization functions (loaded via extensions when Plots.jl is available)
-export plot_trajectory, plot_phase_portrait, animate_comparison, create_training_gif
+export plot_trajectory, plot_phase_portrait, animate_comparison, create_training_gif,
+       plot_loss_evolution, plot_gradient_evolution, plot_gradient_scatter, create_gradient_chaos_gif
 
 using LinearAlgebra
 using Statistics
