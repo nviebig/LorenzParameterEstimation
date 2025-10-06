@@ -188,6 +188,7 @@ function modular_train!(
         println("Epoch │   Train    │    Val     │ Parameters")
         println("──────┼────────────┼────────────┼────────────────────────────")
     end
+
     # Training loop
     for epoch in 1:epochs         
         # Training phase
@@ -201,9 +202,11 @@ function modular_train!(
         train_batches = [current_train_indices[i:min(i+batch_size-1, end)] 
                         for i in 1:batch_size:length(current_train_indices)]
         
+        # Mini-batch SGD: compute gradients for each window in the batch, average over batch, then update
         for batch_windows in train_batches
             # Compute average gradients over the batch
             batch_loss = zero(T)  # Initialize batch loss
+            # Initialize average gradients
             avg_grads = (σ = zero(T), ρ = zero(T), β = zero(T), 
                         x_s = zero(T), y_s = zero(T), z_s = zero(T), θ = zero(T))
             
@@ -238,8 +241,8 @@ function modular_train!(
                         y_s = avg_grads.y_s / batch_size_actual,
                         z_s = avg_grads.z_s / batch_size_actual,
                         θ = avg_grads.θ / batch_size_actual)
-            
-            # Apply parameter update mask and convert to array format
+
+            # Control parameter update mask and convert to array format *dependent on which parameters are being updated*
             masked_grads = (σ = [update_mask.σ ? avg_grads.σ : zero(T)],
                            ρ = [update_mask.ρ ? avg_grads.ρ : zero(T)],
                            β = [update_mask.β ? avg_grads.β : zero(T)],
@@ -256,7 +259,7 @@ function modular_train!(
         train_loss = epoch_loss / total_windows_processed  # Average training loss over all windows actually processed
 
         # Validation phase
-        if !isempty(val_indices) && epoch % eval_every == 0          # Only evaluate on validation set every eval_every epochs
+        if !isempty(val_indices) && epoch % eval_every == 0                     # Only evaluate on validation set every eval_every epochs
             val_total = zero(T)                                                 # Initialize validation loss                        
             for window_start in val_indices                                     # Process each validation window               
                 current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
@@ -387,30 +390,18 @@ function train!(
     target_solution::L63Solution{T},
     config::L63TrainingConfig{T}) where {T}
 
-    # Create windows from the solution data
+    # Check we have enough data for at least one window
     n_timesteps = length(target_solution.t)
     window_size = config.window_size
-    stride = config.stride
     
-    # Calculate number of windows we can create
-    n_windows = max(0, div(n_timesteps - window_size, stride) + 1)
-    n_windows > 0 || throw(ArgumentError("Insufficient data for training with given window_size and stride"))
-    
-    # Create train/validation split
-    rng = deepcopy(config.rng)
-    indices = collect(1:n_windows)
-    if config.shuffle
-        Random.shuffle!(rng, indices)
+    if n_timesteps < window_size
+        throw(ArgumentError("Insufficient data for training with given window_size"))
     end
-    
-    train_count = max(1, min(n_windows, round(Int, config.train_fraction * n_windows)))
-    train_indices = indices[1:train_count]
-    val_indices = train_count < n_windows ? indices[train_count + 1:end] : Int[]
     
     loss_fn = config.loss === nothing ? window_rmse : config.loss
     
     # Initialize parameters as NamedTuple for Optimisers.jl
-    # Wrap scalars in Ref to make them mutable for Optimisers.jl
+    # Wrap scalars in arrays to make them mutable for Optimisers.jl
     ps = (σ = [params.σ], ρ = [params.ρ], β = [params.β])
     opt_state = Optimisers.setup(config.optimiser, ps)
     
@@ -424,91 +415,47 @@ function train!(
     best_params = params
     best_metric = convert(T, Inf)
     
+    # Use first window for training (window_start = 1)
+    window_start = 1
+    
     if config.verbose
         _print_training_header()
     end
     
     for epoch in 1:config.epochs
-        if config.shuffle
-            Random.shuffle!(rng, train_indices)
+        # Convert current ps to L63Parameters for gradient computation
+        current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
+                                         params.x_s, params.y_s, params.z_s, params.θ)
+        
+        # Compute loss and gradients for the first window only
+        loss_val, gradients = compute_gradients(current_params, target_solution, window_start, window_size, loss_fn)
+        
+        # Apply parameter update mask and convert to array format
+        masked_grads = (σ = [config.update_mask.σ ? gradients.σ : zero(T)],
+                       ρ = [config.update_mask.ρ ? gradients.ρ : zero(T)],
+                       β = [config.update_mask.β ? gradients.β : zero(T)])
+        
+        # Apply gradient clipping if specified
+        if config.clip_norm < Inf
+            grad_norm = sqrt(masked_grads.σ[1]^2 + masked_grads.ρ[1]^2 + masked_grads.β[1]^2)
+            if grad_norm > config.clip_norm
+                clip_factor = config.clip_norm / grad_norm
+                masked_grads = (σ = [masked_grads.σ[1] * clip_factor],
+                               ρ = [masked_grads.ρ[1] * clip_factor],
+                               β = [masked_grads.β[1] * clip_factor])
+            end
         end
         
-        epoch_loss = zero(T)
-        n_batches = 0
+        # Update parameters using Optimisers.jl
+        opt_state, ps = Optimisers.update(opt_state, ps, masked_grads)
         
-        # Create batches for this epoch
-        batch_indices = [train_indices[i:min(i+config.batch_size-1, end)] 
-                        for i in 1:config.batch_size:length(train_indices)]
+        # Convert updated parameters back to L63Parameters
+        params = L63Parameters(ps.σ[1], ps.ρ[1], ps.β[1], params.x_s, params.y_s, params.z_s, params.θ)
         
-        for batch in batch_indices
-            # Compute average gradients over the batch
-            batch_loss = zero(T)
-            avg_grads = (σ = zero(T), ρ = zero(T), β = zero(T))
-            
-            for window_idx in batch
-                # Calculate window start index
-                window_start = (window_idx - 1) * stride + 1
-                
-                # Convert current ps to L63Parameters for gradient computation
-                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
-                                                 params.x_s, params.y_s, params.z_s, params.θ)
-                loss_val, gradients = compute_gradients(current_params, target_solution, window_start, window_size, loss_fn)
-                
-                batch_loss += loss_val
-                avg_grads = (σ = avg_grads.σ + gradients.σ, 
-                           ρ = avg_grads.ρ + gradients.ρ, 
-                           β = avg_grads.β + gradients.β)
-            end
-            
-            # Average the gradients and loss
-            batch_size_actual = length(batch)
-            batch_loss /= batch_size_actual
-            avg_grads = (σ = avg_grads.σ / batch_size_actual,
-                        ρ = avg_grads.ρ / batch_size_actual,
-                        β = avg_grads.β / batch_size_actual)
-            
-            # Apply parameter update mask and convert to array format
-            masked_grads = (σ = [config.update_mask.σ ? avg_grads.σ : zero(T)],
-                           ρ = [config.update_mask.ρ ? avg_grads.ρ : zero(T)],
-                           β = [config.update_mask.β ? avg_grads.β : zero(T)])
-            
-            # Apply gradient clipping if specified
-            if config.clip_norm < Inf
-                grad_norm = sqrt(masked_grads.σ[1]^2 + masked_grads.ρ[1]^2 + masked_grads.β[1]^2)
-                if grad_norm > config.clip_norm
-                    clip_factor = config.clip_norm / grad_norm
-                    masked_grads = (σ = [masked_grads.σ[1] * clip_factor],
-                                   ρ = [masked_grads.ρ[1] * clip_factor],
-                                   β = [masked_grads.β[1] * clip_factor])
-                end
-            end
-            
-            # Update parameters using Optimisers.jl
-            opt_state, ps = Optimisers.update(opt_state, ps, masked_grads)
-            
-            # Convert updated parameters back to L63Parameters
-            params = L63Parameters(ps.σ[1], ps.ρ[1], ps.β[1], params.x_s, params.y_s, params.z_s, params.θ)
-            
-            epoch_loss += batch_loss
-            n_batches += 1
-        end
+        train_loss = loss_val
         
-        train_loss = epoch_loss / n_batches
-        
-        # Validation phase
-        val_loss = if !isempty(val_indices) && epoch % config.eval_every == 0
-            val_total = zero(T)
-            for window_idx in val_indices
-                window_start = (window_idx - 1) * stride + 1
-                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
-                                                 params.x_s, params.y_s, params.z_s, params.θ)
-                loss_val, _ = compute_gradients(current_params, target_solution, window_start, window_size, loss_fn)
-                val_total += loss_val
-            end
-            val_total / length(val_indices)
-        else
-            missing
-        end
+        # No validation phase since we're only using first window
+        val_loss = missing
         
         # Record metrics
         current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
@@ -517,9 +464,8 @@ function train!(
         push!(metrics_history, (train = train_loss, validation = val_loss))
         
         # Update best model
-        metric = ismissing(val_loss) ? train_loss : val_loss
-        if metric < best_metric
-            best_metric = metric
+        if train_loss < best_metric
+            best_metric = train_loss
             best_params = deepcopy(current_params)
         end
         
