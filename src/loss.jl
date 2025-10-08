@@ -17,7 +17,7 @@ and batch averages. Useful for analyzing chaotic behavior vs meaningful averaged
 """
 mutable struct TrainingMetrics{T <: Real}
     # Loss tracking
-    individual_losses::Vector{T}                    # Loss for each individual window
+    individual_losses::Vector{T}                   # Loss for each individual window
     batch_losses::Vector{T}                        # Average loss per batch
     epoch_losses::Vector{T}                        # Average loss per epoch
     
@@ -36,12 +36,46 @@ mutable struct TrainingMetrics{T <: Real}
     batch_gradients_β::Vector{T}                   # Average β gradient per batch
     epoch_gradients_β::Vector{T}                   # Average β gradient per epoch
     
+    # Gradient tracking for x_s parameter (coordinate shift)
+    individual_gradients_x_s::Vector{T}            # x_s gradient for each window
+    batch_gradients_x_s::Vector{T}                 # Average x_s gradient per batch
+    epoch_gradients_x_s::Vector{T}                 # Average x_s gradient per epoch
+    
+    # Gradient tracking for y_s parameter (coordinate shift)
+    individual_gradients_y_s::Vector{T}            # y_s gradient for each window
+    batch_gradients_y_s::Vector{T}                 # Average y_s gradient per batch
+    epoch_gradients_y_s::Vector{T}                 # Average y_s gradient per epoch
+    
+    # Gradient tracking for z_s parameter (coordinate shift)
+    individual_gradients_z_s::Vector{T}            # z_s gradient for each window
+    batch_gradients_z_s::Vector{T}                 # Average z_s gradient per batch
+    epoch_gradients_z_s::Vector{T}                 # Average z_s gradient per epoch
+    
+    # Gradient tracking for θ parameter 
+    individual_gradients_θ::Vector{T}              # θ gradient for each window
+    batch_gradients_θ::Vector{T}                   # Average θ gradient per batch
+    epoch_gradients_θ::Vector{T}                   # Average θ gradient per epoch
+    
+    # Variance/chaos tracking (to quantify how chaotic individual gradients are)
+    batch_gradient_std_σ::Vector{T}                # Standard deviation of σ gradients within each batch
+    batch_gradient_std_ρ::Vector{T}                # Standard deviation of ρ gradients within each batch  
+    batch_gradient_std_β::Vector{T}                # Standard deviation of β gradients within each batch
+    batch_gradient_std_x_s::Vector{T}              # Standard deviation of x_s gradients within each batch
+    batch_gradient_std_y_s::Vector{T}              # Standard deviation of y_s gradients within each batch
+    batch_gradient_std_z_s::Vector{T}              # Standard deviation of z_s gradients within each batch
+    batch_gradient_std_θ::Vector{T}                # Standard deviation of θ gradients within each batch
+    
+    # First gradient of each epoch (to track initial chaos)
+    first_gradient_per_epoch_x_s::Vector{T}        # First individual x_s gradient of each epoch
+    
     # Additional metadata
     batch_indices::Vector{Int}                     # Which batch each individual measurement belongs to
     window_indices::Vector{Int}                    # Window start index for each measurement
     
     function TrainingMetrics{T}() where {T <: Real}
-        new{T}(T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], Int[], Int[])
+        new{T}(T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], 
+               T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], T[], 
+               T[], T[], T[], T[], T[], T[], T[], T[], Int[], Int[])
     end
 end
 
@@ -65,6 +99,26 @@ function reset_metrics!(metrics::TrainingMetrics)
     empty!(metrics.individual_gradients_β)
     empty!(metrics.batch_gradients_β)
     empty!(metrics.epoch_gradients_β)
+    empty!(metrics.individual_gradients_x_s)
+    empty!(metrics.batch_gradients_x_s)
+    empty!(metrics.epoch_gradients_x_s)
+    empty!(metrics.individual_gradients_y_s)
+    empty!(metrics.batch_gradients_y_s)
+    empty!(metrics.epoch_gradients_y_s)
+    empty!(metrics.individual_gradients_z_s)
+    empty!(metrics.batch_gradients_z_s)
+    empty!(metrics.epoch_gradients_z_s)
+    empty!(metrics.individual_gradients_θ)
+    empty!(metrics.batch_gradients_θ)
+    empty!(metrics.epoch_gradients_θ)
+    empty!(metrics.batch_gradient_std_σ)
+    empty!(metrics.batch_gradient_std_ρ)
+    empty!(metrics.batch_gradient_std_β)
+    empty!(metrics.batch_gradient_std_x_s)
+    empty!(metrics.batch_gradient_std_y_s)
+    empty!(metrics.batch_gradient_std_z_s)
+    empty!(metrics.batch_gradient_std_θ)
+    empty!(metrics.first_gradient_per_epoch_x_s)
     empty!(metrics.batch_indices)
     empty!(metrics.window_indices)
     return metrics
@@ -82,21 +136,83 @@ function record_window_metrics!(metrics::TrainingMetrics, loss_val, gradients::L
     push!(metrics.individual_gradients_σ, gradients.σ)
     push!(metrics.individual_gradients_ρ, gradients.ρ)
     push!(metrics.individual_gradients_β, gradients.β)
+    push!(metrics.individual_gradients_x_s, gradients.x_s)
+    push!(metrics.individual_gradients_y_s, gradients.y_s)
+    push!(metrics.individual_gradients_z_s, gradients.z_s)
+    push!(metrics.individual_gradients_θ, gradients.θ)
     push!(metrics.batch_indices, batch_idx)
     push!(metrics.window_indices, window_start)
     return metrics
 end
 
 """
-    record_batch_metrics!(metrics::TrainingMetrics, batch_loss, avg_gradients::L63Parameters)
+    record_batch_metrics!(metrics::TrainingMetrics, batch_loss, avg_gradients::L63Parameters, 
+                         batch_individual_gradients::AbstractVector{<:L63Parameters})
 
-Record averaged loss and gradients for a batch.
+Record averaged loss and gradients for a batch, plus compute variance to track chaos.
 """
+function record_batch_metrics!(metrics::TrainingMetrics, batch_loss, avg_gradients::L63Parameters, 
+                               batch_individual_gradients::AbstractVector{<:L63Parameters})
+    push!(metrics.batch_losses, batch_loss)
+    push!(metrics.batch_gradients_σ, avg_gradients.σ)
+    push!(metrics.batch_gradients_ρ, avg_gradients.ρ)
+    push!(metrics.batch_gradients_β, avg_gradients.β)
+    push!(metrics.batch_gradients_x_s, avg_gradients.x_s)
+    push!(metrics.batch_gradients_y_s, avg_gradients.y_s)
+    push!(metrics.batch_gradients_z_s, avg_gradients.z_s)
+    push!(metrics.batch_gradients_θ, avg_gradients.θ)
+    
+    # Compute standard deviations within the batch to quantify chaos
+    if length(batch_individual_gradients) > 1
+        σ_grads = [g.σ for g in batch_individual_gradients]
+        ρ_grads = [g.ρ for g in batch_individual_gradients]
+        β_grads = [g.β for g in batch_individual_gradients]
+        x_s_grads = [g.x_s for g in batch_individual_gradients]
+        y_s_grads = [g.y_s for g in batch_individual_gradients]
+        z_s_grads = [g.z_s for g in batch_individual_gradients]
+        θ_grads = [g.θ for g in batch_individual_gradients]
+        
+        push!(metrics.batch_gradient_std_σ, std(σ_grads))
+        push!(metrics.batch_gradient_std_ρ, std(ρ_grads))
+        push!(metrics.batch_gradient_std_β, std(β_grads))
+        push!(metrics.batch_gradient_std_x_s, std(x_s_grads))
+        push!(metrics.batch_gradient_std_y_s, std(y_s_grads))
+        push!(metrics.batch_gradient_std_z_s, std(z_s_grads))
+        push!(metrics.batch_gradient_std_θ, std(θ_grads))
+    else
+        # Single gradient in batch - no variance
+        push!(metrics.batch_gradient_std_σ, 0.0)
+        push!(metrics.batch_gradient_std_ρ, 0.0)
+        push!(metrics.batch_gradient_std_β, 0.0)
+        push!(metrics.batch_gradient_std_x_s, 0.0)
+        push!(metrics.batch_gradient_std_y_s, 0.0)
+        push!(metrics.batch_gradient_std_z_s, 0.0)
+        push!(metrics.batch_gradient_std_θ, 0.0)
+    end
+    
+    return metrics
+end
+
+# Backward compatibility: if no individual gradients provided, skip variance tracking
 function record_batch_metrics!(metrics::TrainingMetrics, batch_loss, avg_gradients::L63Parameters)
     push!(metrics.batch_losses, batch_loss)
     push!(metrics.batch_gradients_σ, avg_gradients.σ)
     push!(metrics.batch_gradients_ρ, avg_gradients.ρ)
     push!(metrics.batch_gradients_β, avg_gradients.β)
+    push!(metrics.batch_gradients_x_s, avg_gradients.x_s)
+    push!(metrics.batch_gradients_y_s, avg_gradients.y_s)
+    push!(metrics.batch_gradients_z_s, avg_gradients.z_s)
+    push!(metrics.batch_gradients_θ, avg_gradients.θ)
+    
+    # Add zeros for variance (no individual gradients to compute variance from)
+    push!(metrics.batch_gradient_std_σ, 0.0)
+    push!(metrics.batch_gradient_std_ρ, 0.0)
+    push!(metrics.batch_gradient_std_β, 0.0)
+    push!(metrics.batch_gradient_std_x_s, 0.0)
+    push!(metrics.batch_gradient_std_y_s, 0.0)
+    push!(metrics.batch_gradient_std_z_s, 0.0)
+    push!(metrics.batch_gradient_std_θ, 0.0)
+    
     return metrics
 end
 
@@ -110,6 +226,20 @@ function record_epoch_metrics!(metrics::TrainingMetrics, epoch_loss, avg_gradien
     push!(metrics.epoch_gradients_σ, avg_gradients.σ)
     push!(metrics.epoch_gradients_ρ, avg_gradients.ρ)
     push!(metrics.epoch_gradients_β, avg_gradients.β)
+    push!(metrics.epoch_gradients_x_s, avg_gradients.x_s)
+    push!(metrics.epoch_gradients_y_s, avg_gradients.y_s)
+    push!(metrics.epoch_gradients_z_s, avg_gradients.z_s)
+    push!(metrics.epoch_gradients_θ, avg_gradients.θ)
+    return metrics
+end
+
+"""
+    record_first_gradient_of_epoch!(metrics::TrainingMetrics, first_gradient::L63Parameters)
+
+Record the first gradient computed in each epoch to track initial chaos level.
+"""
+function record_first_gradient_of_epoch!(metrics::TrainingMetrics, first_gradient::L63Parameters)
+    push!(metrics.first_gradient_per_epoch_x_s, first_gradient.x_s)
     return metrics
 end
 
@@ -131,16 +261,119 @@ function compute_gradient_statistics(metrics::TrainingMetrics, batch_idx::Int)
     σ_grads = metrics.individual_gradients_σ[batch_mask]
     ρ_grads = metrics.individual_gradients_ρ[batch_mask]
     β_grads = metrics.individual_gradients_β[batch_mask]
+    x_s_grads = metrics.individual_gradients_x_s[batch_mask]
+    y_s_grads = metrics.individual_gradients_y_s[batch_mask]
+    z_s_grads = metrics.individual_gradients_z_s[batch_mask]
+    θ_grads = metrics.individual_gradients_θ[batch_mask]
     
     # Compute statistics
     stats = (
         σ = (mean = mean(σ_grads), std = std(σ_grads), min = minimum(σ_grads), max = maximum(σ_grads)),
         ρ = (mean = mean(ρ_grads), std = std(ρ_grads), min = minimum(ρ_grads), max = maximum(ρ_grads)),
         β = (mean = mean(β_grads), std = std(β_grads), min = minimum(β_grads), max = maximum(β_grads)),
+        x_s = (mean = mean(x_s_grads), std = std(x_s_grads), min = minimum(x_s_grads), max = maximum(x_s_grads)),
+        y_s = (mean = mean(y_s_grads), std = std(y_s_grads), min = minimum(y_s_grads), max = maximum(y_s_grads)),
+        z_s = (mean = mean(z_s_grads), std = std(z_s_grads), min = minimum(z_s_grads), max = maximum(z_s_grads)),
+        θ = (mean = mean(θ_grads), std = std(θ_grads), min = minimum(θ_grads), max = maximum(θ_grads)),
         count = sum(batch_mask)
     )
     
     return stats
+end
+
+"""
+    analyze_chaos_to_signal_conversion(metrics::TrainingMetrics; parameter=:x_s)
+
+Analyze how individual chaotic gradients are converted to meaningful signal through averaging.
+This demonstrates Milan's key insight about chaos in parameter estimation.
+
+Returns a detailed analysis of:
+- Individual gradient chaos (high variance)
+- Batch averaging signal extraction (reduced variance)
+- Epoch averaging optimization signal (clean signal)
+- First gradients per epoch (tracking chaos level over training)
+"""
+function analyze_chaos_to_signal_conversion(metrics::TrainingMetrics; parameter=:x_s)
+    # Select the gradient arrays based on parameter
+    individual_grads, batch_grads, epoch_grads, batch_stds, first_grads = if parameter == :x_s
+        (metrics.individual_gradients_x_s, metrics.batch_gradients_x_s, 
+         metrics.epoch_gradients_x_s, metrics.batch_gradient_std_x_s, 
+         metrics.first_gradient_per_epoch_x_s)
+    elseif parameter == :σ
+        (metrics.individual_gradients_σ, metrics.batch_gradients_σ, 
+         metrics.epoch_gradients_σ, metrics.batch_gradient_std_σ, Float64[])
+    elseif parameter == :ρ
+        (metrics.individual_gradients_ρ, metrics.batch_gradients_ρ, 
+         metrics.epoch_gradients_ρ, metrics.batch_gradient_std_ρ, Float64[])
+    elseif parameter == :β
+        (metrics.individual_gradients_β, metrics.batch_gradients_β, 
+         metrics.epoch_gradients_β, metrics.batch_gradient_std_β, Float64[])
+    else
+        error("Parameter $parameter not supported. Use :x_s, :σ, :ρ, or :β")
+    end
+    
+    if isempty(individual_grads)
+        return nothing
+    end
+    
+    # Compute chaos metrics
+    ind_mean = mean(individual_grads)
+    ind_std = std(individual_grads)
+    ind_cv = abs(ind_std / ind_mean) * 100  # Coefficient of variation as chaos measure
+    
+    # Batch averaging metrics
+    batch_mean = isempty(batch_grads) ? NaN : mean(batch_grads)
+    batch_std = isempty(batch_grads) ? NaN : std(batch_grads)
+    batch_cv = isempty(batch_grads) ? NaN : abs(batch_std / batch_mean) * 100
+    
+    # Epoch averaging metrics  
+    epoch_mean = isempty(epoch_grads) ? NaN : mean(epoch_grads)
+    epoch_std = isempty(epoch_grads) ? NaN : std(epoch_grads)
+    epoch_cv = isempty(epoch_grads) ? NaN : abs(epoch_std / epoch_mean) * 100
+    
+    # Average batch-level standard deviation (measure of within-batch chaos)
+    avg_batch_std = isempty(batch_stds) ? NaN : mean(batch_stds)
+    
+    # First gradient analysis (chaos evolution over training)
+    first_grad_std = isempty(first_grads) ? NaN : std(first_grads)
+    first_grad_trend = if length(first_grads) > 5
+        # Simple linear trend: is chaos decreasing over training?
+        epochs = 1:length(first_grads)
+        corr_coef = cor(epochs, abs.(first_grads))
+        corr_coef
+    else
+        NaN
+    end
+    
+    # Signal-to-noise improvements
+    chaos_reduction_batch = isfinite(batch_cv) ? ind_cv - batch_cv : NaN
+    chaos_reduction_epoch = isfinite(epoch_cv) ? ind_cv - epoch_cv : NaN
+    snr_improvement_batch = isfinite(batch_cv) && batch_cv > 0 ? ind_cv / batch_cv : NaN
+    snr_improvement_epoch = isfinite(epoch_cv) && epoch_cv > 0 ? ind_cv / epoch_cv : NaN
+    
+    return (
+        parameter = parameter,
+        
+        # Raw chaos metrics
+        individual = (mean = ind_mean, std = ind_std, cv = ind_cv, count = length(individual_grads)),
+        batch = (mean = batch_mean, std = batch_std, cv = batch_cv, count = length(batch_grads)),
+        epoch = (mean = epoch_mean, std = epoch_std, cv = epoch_cv, count = length(epoch_grads)),
+        
+        # Within-batch chaos
+        avg_within_batch_std = avg_batch_std,
+        
+        # Training evolution
+        first_gradients = (std = first_grad_std, trend_correlation = first_grad_trend, count = length(first_grads)),
+        
+        # Key insights for Milan's research
+        chaos_to_signal = (
+            batch_chaos_reduction_percent = chaos_reduction_batch,
+            epoch_chaos_reduction_percent = chaos_reduction_epoch, 
+            batch_snr_improvement = snr_improvement_batch,
+            epoch_snr_improvement = snr_improvement_epoch,
+            averaging_effectiveness = !isnan(snr_improvement_batch) && snr_improvement_batch > 1.5
+        )
+    )
 end
 
 # ================================ Enzyme-compatible helper functions ================================
@@ -509,8 +742,8 @@ function compute_gradients_with_tracking(params::L63Parameters{T}, target_soluti
                                         metrics::Union{TrainingMetrics, Nothing} = nothing,
                                         batch_idx::Int = 0) where {T}
     
-    # Use the regular compute_gradients function
-    loss_val, gradients = compute_gradients(params, target_solution, window_start, window_length, loss_function)
+    # Use the extended gradients function to handle all 7 parameters
+    loss_val, gradients = compute_gradients_extended(params, target_solution, window_start, window_length, loss_function)
     
     # Record metrics if requested
     if metrics !== nothing
