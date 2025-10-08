@@ -57,6 +57,8 @@ It provides:
 - `update_y_s::Bool=false`: Whether to update y_s coordinate shift
 - `update_z_s::Bool=false`: Whether to update z_s coordinate shift
 - `update_θ::Bool=false`: Whether to update θ parameter
+- `track_gradients::Bool=false`: Enable gradient tracking for chaos analysis (requires metrics parameter)
+- `metrics::Union{Nothing, TrainingMetrics}=nothing`: Metrics object to store gradient tracking data
 - `rng::AbstractRNG=Random.default_rng()`: Random number generator
 
 # Examples
@@ -90,6 +92,14 @@ results = modular_train!(params, solution,
                         optimizer_config=opt_config,
                         loss_function=weighted_window_loss(window_rmse, 1.5),
                         epochs=200)
+
+# Gradient chaos analysis with tracking
+metrics = TrainingMetrics()
+results = modular_train!(params, solution,
+                        track_gradients=true,
+                        metrics=metrics,
+                        epochs=50)
+# Now you can analyze chaos: metrics.individual_gradients_σ, metrics.batch_gradients_σ, etc.
 ```
 """
 function modular_train!(
@@ -126,6 +136,10 @@ function modular_train!(
     early_stopping_patience::Int = 20,                  # Early stopping patience (in epochs)
     early_stopping_min_delta::Real = 1e-6,              # Minimum change to qualify as improvement for early stopping
     
+    # Gradient tracking (optional - for chaos analysis)
+    track_gradients::Bool = false,                       # Enable gradient tracking for chaos analysis
+    metrics::Union{Nothing, TrainingMetrics} = nothing, # Metrics object to store gradient tracking data
+    
     # Reproducibility
     rng::Random.AbstractRNG = Random.default_rng()      # Random number generator
 ) where {T}
@@ -159,6 +173,11 @@ function modular_train!(
     # Parameter update mask (for masking gradients) - all 7 parameters
     update_mask = (σ = update_σ, ρ = update_ρ, β = update_β,
                    x_s = update_x_s, y_s = update_y_s, z_s = update_z_s, θ = update_θ)
+    
+    # Initialize gradient tracking if requested
+    if track_gradients && metrics !== nothing
+        reset_metrics!(metrics)
+    end
     
     # Training state
     metrics_history = NamedTuple[]                                 # To store (epoch, train_loss, val_loss, params)
@@ -194,32 +213,51 @@ function modular_train!(
         # Training phase
         epoch_loss = zero(T)    # Initialize epoch loss
         total_windows_processed = 0  # Count actual windows processed
+        first_gradient_recorded = false  # Track if we've recorded the first gradient of this epoch
         
         # Shuffle training windows
         current_train_indices = shuffle ? Random.shuffle(rng, copy(train_indices)) : train_indices  # Shuffle if specified
         
-        # Process training windows in batches
+        # Process training windows in batches, create batches of window start indices
         train_batches = [current_train_indices[i:min(i+batch_size-1, end)] 
                         for i in 1:batch_size:length(current_train_indices)]
         
         # Mini-batch SGD: compute gradients for each window in the batch, average over batch, then update
-        for batch_windows in train_batches
+        for (batch_idx, batch_windows) in enumerate(train_batches)
             # Compute average gradients over the batch
             batch_loss = zero(T)  # Initialize batch loss
             # Initialize average gradients
             avg_grads = (σ = zero(T), ρ = zero(T), β = zero(T), 
                         x_s = zero(T), y_s = zero(T), z_s = zero(T), θ = zero(T))
             
+            # Collect individual gradients for variance analysis (Milan's research)
+            batch_individual_gradients = L63Parameters{T}[]
+            
             for window_start in batch_windows                                       # Process each window in the batch
                 current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
                                                  ps.x_s[1], ps.y_s[1], ps.z_s[1], ps.θ[1])  # All 7 parameters
-                loss_val, grads = compute_gradients_extended(
-                    current_params, 
-                    target_solution, 
-                    window_start, 
-                    window_size, 
-                    loss_function
-                )  # Compute loss and gradients via Enzyme for all 7 parameters
+                
+                # Use gradient tracking if enabled, otherwise use standard computation
+                if track_gradients && metrics !== nothing
+                    loss_val, grads = compute_gradients_with_tracking(
+                        current_params, 
+                        target_solution, 
+                        window_start, 
+                        window_size, 
+                        loss_function;
+                        metrics=metrics, 
+                        batch_idx=batch_idx
+                    )  # Compute loss and gradients with tracking for chaos analysis
+                else
+                    loss_val, grads = compute_gradients_extended(
+                        current_params, 
+                        target_solution, 
+                        window_start, 
+                        window_size, 
+                        loss_function
+                    )  # Compute loss and gradients via Enzyme for all 7 parameters (standard)
+                end
+                
                 batch_loss += loss_val # Accumulate batch loss
                 avg_grads = (σ = avg_grads.σ + grads.σ, 
                            ρ = avg_grads.ρ + grads.ρ, 
@@ -228,6 +266,18 @@ function modular_train!(
                            y_s = avg_grads.y_s + grads.y_s,
                            z_s = avg_grads.z_s + grads.z_s,
                            θ = avg_grads.θ + grads.θ)
+                
+                # Collect individual gradient for variance analysis
+                if track_gradients && metrics !== nothing
+                    push!(batch_individual_gradients, grads)
+                    
+                    # Record first gradient of the epoch (Milan's chaos evolution analysis)
+                    if !first_gradient_recorded
+                        record_first_gradient_of_epoch!(metrics, grads)
+                        first_gradient_recorded = true
+                    end
+                end
+                
                 total_windows_processed += 1  # Count this window
             end
             
@@ -250,6 +300,14 @@ function modular_train!(
                            y_s = [update_mask.y_s ? avg_grads.y_s : zero(T)],
                            z_s = [update_mask.z_s ? avg_grads.z_s : zero(T)],
                            θ = [update_mask.θ ? avg_grads.θ : zero(T)])
+            
+            # Record batch metrics if gradient tracking is enabled
+            if track_gradients && metrics !== nothing
+                avg_batch_grads = L63Parameters(avg_grads.σ, avg_grads.ρ, avg_grads.β, 
+                                               avg_grads.x_s, avg_grads.y_s, avg_grads.z_s, avg_grads.θ)
+                # Use enhanced function with individual gradients for variance tracking
+                record_batch_metrics!(metrics, batch_loss, avg_batch_grads, batch_individual_gradients)
+            end
             
             # Update parameters using Optimisers.jl
             opt_state, ps = Optimisers.update(opt_state, ps, masked_grads)  # Update parameters using Optimisers.jl
@@ -280,18 +338,39 @@ function modular_train!(
         # Record metrics
         current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], ps.x_s[1], ps.y_s[1], ps.z_s[1], ps.θ[1])  # All 7 parameters
         
+        # Record epoch metrics if gradient tracking is enabled
+        if track_gradients && metrics !== nothing
+            # Compute epoch-level average gradients from batch gradients
+            if !isempty(metrics.batch_gradients_σ)
+                n_batches_current = length(train_batches)
+                # Get the last n_batches_current batch gradients (from this epoch)
+                start_idx = max(1, length(metrics.batch_gradients_σ) - n_batches_current + 1)
+                epoch_grad_σ = mean(metrics.batch_gradients_σ[start_idx:end])
+                epoch_grad_ρ = mean(metrics.batch_gradients_ρ[start_idx:end])
+                epoch_grad_β = mean(metrics.batch_gradients_β[start_idx:end])
+                epoch_grad_x_s = mean(metrics.batch_gradients_x_s[start_idx:end])
+                epoch_grad_y_s = mean(metrics.batch_gradients_y_s[start_idx:end])
+                epoch_grad_z_s = mean(metrics.batch_gradients_z_s[start_idx:end])
+                epoch_grad_θ = mean(metrics.batch_gradients_θ[start_idx:end])
+                
+                avg_epoch_grads = L63Parameters(epoch_grad_σ, epoch_grad_ρ, epoch_grad_β,
+                                               epoch_grad_x_s, epoch_grad_y_s, epoch_grad_z_s, epoch_grad_θ)
+                record_epoch_metrics!(metrics, train_loss, avg_epoch_grads)
+            end
+        end
+        
         push!(param_history, current_params)                                    # Store parameter history
         push!(train_loss_history, train_loss)                                   # Store training loss
         push!(val_loss_history, val_loss)                                       # Store validation loss
 
-        metrics = (                                                             # Record metrics
+        training_status = (                                                     # Record training status for this epoch
             epoch = epoch,                                                      # Current epoch
             train_loss = train_loss,                                            # Training loss
             val_loss = val_loss,                                                # Validation loss (or missing)     
             params = current_params                                             # Current parameters      
         )
         
-        push!(metrics_history, metrics)                                         # Store metrics history
+        push!(metrics_history, training_status)                                 # Store training status history
         
         # Update best model
         metric_for_best = ismissing(val_loss) ? train_loss : val_loss           # Use validation loss if available, else training loss
