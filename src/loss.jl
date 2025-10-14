@@ -379,6 +379,33 @@ end
 # ================================ Enzyme-compatible helper functions ================================
 # These functions are defined at module level to avoid scoping issues with Enzyme
 
+"""
+    linear_enzyme_function(σ, ρ, β, u0, target_trajectory, window_length, dt)
+
+Enzyme-friendly linear loss for 3-parameter model.
+L = mean(ŷ - y) over all steps/components in the window.
+"""
+function linear_enzyme_function(
+    σ::T, ρ::T, β::T,
+    u0::AbstractVector{T},
+    target_trajectory::AbstractMatrix{T},
+    window_length::Int, dt::T
+) where {T}
+    params = L63Parameters(σ, ρ, β)
+    u = similar(u0); u .= u0
+
+    s = zero(T)
+    count = 0
+    @inbounds for i in 1:window_length
+        u = rk4_step(u, params, dt)
+        for j in 1:3
+            s += (u[j] - target_trajectory[i+1, j])
+            count += 1
+        end
+    end
+    return s / count
+end
+
 
 """
     mae_enzyme_function(σ, ρ, β, u0, target_trajectory, window_length, dt)
@@ -427,6 +454,7 @@ function mae_enzyme_function(
     
     return ae / count
 end
+
 
 """
     adaptive_enzyme_function(σ, ρ, β, u0, target_trajectory, window_length, dt)
@@ -515,6 +543,39 @@ function mse_enzyme_function(σ::T, ρ::T, β::T, u0::AbstractVector{T},
     return se / count
 end
 
+"""
+    probabilistic_enzyme_function(σ, ρ, β, u0, target_trajectory, window_length, dt)
+
+Negative log-likelihood loss assuming independent Gaussian noise with fixed variance.
+Matches `probabilistic_loss` (default `noise_std = 0.1`) while remaining Enzyme-friendly.
+"""
+function probabilistic_enzyme_function(σ::T, ρ::T, β::T, u0::AbstractVector{T},
+                                      target_trajectory::AbstractMatrix{T},
+                                      window_length::Int, dt::T) where {T}
+    params = L63Parameters(σ, ρ, β)
+    u = similar(u0)
+    u .= u0
+
+    se = zero(T)
+    noise_std = T(0.1)
+    variance = noise_std * noise_std
+    inv_variance = one(T) / variance
+    log_term = log(T(2π) * variance)
+    component_count = window_length * 3
+
+    @inbounds for i in 1:window_length
+        u = rk4_step(u, params, dt)
+        for j in 1:3
+            diff = u[j] - target_trajectory[i + 1, j]
+            se += diff * diff
+        end
+    end
+
+    return T(0.5) * se * inv_variance + T(0.5) * T(component_count) * log_term
+end
+
+
+
 # ================================ User-facing loss functions ================================
 
 # These functions operate on full trajectory matrices and can be passed to modular_train!()
@@ -530,6 +591,15 @@ end
 # Gradient pass: Uses loss_function_enzyme(σ,ρ,β,...) for Enzyme.autodiff
 #                 ↓
 # Result: Gradients w.r.t. parameters
+
+"""
+    window_linear(predicted, target)
+
+Linear loss over a window: mean(predicted - target).
+"""
+function window_linear(predicted::AbstractMatrix, target::AbstractMatrix)
+    return mean(predicted .- target)
+end
 
 """
     window_rmse(predicted, target)
@@ -871,6 +941,24 @@ function compute_gradients_modular(
         
         return loss_val, L63Parameters(gσ, gρ, gβ)
         
+    elseif loss_function === probabilistic_loss
+        grads = Enzyme.autodiff(
+            Enzyme.Reverse,
+            Enzyme.Const(probabilistic_enzyme_function),
+            Enzyme.Active(σ0),
+            Enzyme.Active(ρ0),
+            Enzyme.Active(β0),
+            Enzyme.Const(u0_vec),
+            Enzyme.Const(target_mat),
+            Enzyme.Const(window_length),
+            Enzyme.Const(dt)
+        )
+
+        gσ, gρ, gβ = grads[1][1], grads[1][2], grads[1][3]
+        loss_val = probabilistic_enzyme_function(σ0, ρ0, β0, u0_vec, target_mat, window_length, dt)
+
+        return loss_val, L63Parameters(gσ, gρ, gβ)
+        
     elseif loss_function === adaptive_loss
         grads = Enzyme.autodiff(
             Enzyme.Reverse,
@@ -889,10 +977,11 @@ function compute_gradients_modular(
         loss_val = adaptive_enzyme_function(σ0, ρ0, β0, u0_vec, target_mat, window_length, dt)
         
         return loss_val, L63Parameters(gσ, gρ, gβ)
+    
+    
         
     else
         # For other loss functions, fall back to the old approach for now
-        # TODO: Add more loss function implementations as needed
         @warn "Loss function $(nameof(loss_function)) not yet optimized for Enzyme. Using fallback (may have zero gradients)."
         
         # Create enzyme-compatible wrapper for the given loss function
@@ -945,10 +1034,37 @@ end
 
 # ================================ Extended Enzyme Functions for 7 Parameters ================================
 
+
+"""
+    linear_enzyme_function_extended(σ, ρ, β, x_s, y_s, z_s, θ, u0, target_trajectory, window_length, dt)
+
+Enzyme-friendly linear loss for 7-parameter model.
+"""
+function linear_enzyme_function_extended(
+    σ::T, ρ::T, β::T, x_s::T, y_s::T, z_s::T, θ::T,
+    u0::AbstractVector{T},
+    target_trajectory::AbstractMatrix{T},
+    window_length::Int, dt::T
+) where {T}
+    params = L63Parameters{T}(σ, ρ, β, x_s, y_s, z_s, θ)
+    u = similar(u0); u .= u0
+
+    s = zero(T)
+    count = 0
+    @inbounds for i in 1:window_length
+        u = rk4_step(u, params, dt)
+        for j in 1:3
+            s += (u[j] - target_trajectory[i+1, j])
+            count += 1
+        end
+    end
+    return s / count
+end
+
 """
     loss_function_enzyme_extended(σ, ρ, β, x_s, y_s, z_s, θ, u0, target_trajectory, window_length, dt)
 
-Extended enzyme-compatible wrapper for loss computation with all 7 parameters.
+Extended enzyme-compatible wrapper for RMSE loss computation with all 7 parameters.
 """
 @inline function loss_function_enzyme_extended(
     σ::T, ρ::T, β::T, x_s::T, y_s::T, z_s::T, θ::T,    # All 7 parameters
@@ -1013,6 +1129,133 @@ Extended MAE enzyme function with all 7 parameters.
     return ae / count  # MAE
 end
 
+
+########## Windowed Huber loss (Enzyme-friendly) ##########
+
+# Safe median & MAD (needed if you want an automatic δ)
+mad(x) = begin
+    m = median(x)
+    median(abs.(x .- m))
+end
+
+# Scalar Huber ρδ(r)
+@inline function huber_rho(r::T, δ::T) where {T}
+    ar = abs(r)
+    return ar <= δ ? (r*r)/T(2) : δ*(ar - δ/T(2))
+end
+
+"""
+    huber_enzyme_function(σ, ρ, β, u0, target, window_length, dt; δ=nothing, δ_scale=1.345)
+
+Windowed Huber loss for Lorenz-63.
+- If `δ` is provided, uses it directly.
+- Else estimates `δ = δ_scale * 1.4826 * MAD(residuals_init)` from a single rollout.
+
+Signature matches your other *\*_enzyme_function* losses.
+"""
+function huber_enzyme_function(
+    σ::T, ρ::T, β::T,
+    u0::AbstractVector{T},
+    target::AbstractMatrix{T},
+    window_length::Int, dt::T;
+    δ::Union{Nothing,T}=nothing, δ_scale::T=T(1.345)
+) where {T}
+
+    @assert size(target,2) == 3
+    @assert window_length <= size(target,1) - 1
+
+    # -- If δ not given, estimate once from initial residuals (robust scale) --
+    δ_local = if δ === nothing
+        params0 = L63Parameters(σ, ρ, β)
+        u0tmp = similar(u0); u0tmp .= u0
+        # collect residuals over the window (all components)
+        # keep it light: sample all steps, 3 comps
+        rs = Vector{T}(undef, window_length*3)
+        k = 1
+        @inbounds for i in 1:window_length
+            u0tmp = rk4_step(u0tmp, params0, dt)
+            rs[k]   = u0tmp[1] - target[i+1,1]; k += 1
+            rs[k]   = u0tmp[2] - target[i+1,2]; k += 1
+            rs[k]   = u0tmp[3] - target[i+1,3]; k += 1
+        end
+        σhat = T(1.4826) * mad(rs)
+        max(σhat*T(1e-12), δ_scale*σhat)  # guard against zero MAD
+    else
+        δ
+    end
+
+    # -- Main pass: compute mean Huber loss over the window --
+    params = L63Parameters(σ, ρ, β)
+    u = similar(u0); u .= u0
+
+    s = zero(T)
+    count::Int = 0
+
+    @inbounds for i in 1:window_length
+        u = rk4_step(u, params, dt)
+        d1 = u[1] - target[i+1,1]; s += huber_rho(d1, δ_local); count += 1
+        d2 = u[2] - target[i+1,2]; s += huber_rho(d2, δ_local); count += 1
+        d3 = u[3] - target[i+1,3]; s += huber_rho(d3, δ_local); count += 1
+    end
+
+    return s / T(count)
+end
+
+########## Optional: pseudo-Huber (smooth everywhere) ##########
+@inline function pseudohuber_rho(r::T, δ::T) where {T}
+    δ^2 * (sqrt(one(T) + (r/δ)^2) - one(T))
+end
+
+function pseudohuber_enzyme_function(
+    σ::T, ρ::T, β::T,
+    u0::AbstractVector{T},
+    target::AbstractMatrix{T},
+    window_length::Int, dt::T;
+    δ::Union{Nothing,T}=nothing, δ_scale::T=T(1.345)
+) where {T}
+
+    @assert size(target,2) == 3
+    @assert window_length <= size(target,1) - 1
+
+    δ_local = if δ === nothing
+        params0 = L63Parameters(σ, ρ, β)
+        u0tmp = similar(u0); u0tmp .= u0
+        rs = Vector{T}(undef, window_length*3)
+        k = 1
+        @inbounds for i in 1:window_length
+            u0tmp = rk4_step(u0tmp, params0, dt)
+            rs[k]   = u0tmp[1] - target[i+1,1]; k += 1
+            rs[k]   = u0tmp[2] - target[i+1,2]; k += 1
+            rs[k]   = u0tmp[3] - target[i+1,3]; k += 1
+        end
+        σhat = T(1.4826) * mad(rs)
+        max(σhat*T(1e-12), δ_scale*σhat)
+    else
+        δ
+    end
+
+    params = L63Parameters(σ, ρ, β)
+    u = similar(u0); u .= u0
+
+    s = zero(T); count::Int = 0
+    @inbounds for i in 1:window_length
+        u = rk4_step(u, params, dt)
+        d1 = u[1] - target[i+1,1]; s += pseudohuber_rho(d1, δ_local); count += 1
+        d2 = u[2] - target[i+1,2]; s += pseudohuber_rho(d2, δ_local); count += 1
+        d3 = u[3] - target[i+1,3]; s += pseudohuber_rho(d3, δ_local); count += 1
+    end
+    return s / T(count)
+end
+
+
+# Positional wrapper (no kwargs)
+@inline function huber_enzyme_function_pos(
+    σ, ρ, β, u0, target, window_length, dt, δ, δ_scale
+)
+    return huber_enzyme_function(σ, ρ, β, u0, target, window_length, dt; δ=δ, δ_scale=δ_scale)
+end
+
+
 """
     mse_enzyme_function_extended(σ, ρ, β, x_s, y_s, z_s, θ, u0, target_trajectory, window_length, dt)
 
@@ -1046,6 +1289,7 @@ Extended MSE enzyme function with all 7 parameters.
     
     return se / count  # MSE
 end
+
 
 """
     compute_gradients_extended(params::L63Parameters, target_solution::L63Solution, 
@@ -1138,7 +1382,44 @@ function compute_gradients_extended(
         loss_val = mse_enzyme_function_extended(σ0, ρ0, β0, x_s0, y_s0, z_s0, θ0, u0_vec, target_mat, window_length, dt)
         
         return loss_val, L63Parameters{T}(gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ)
-        
+
+    elseif loss_function === window_linear
+        grads = Enzyme.autodiff(
+            Enzyme.Reverse,
+            Enzyme.Const(linear_enzyme_function_extended),
+            Enzyme.Active(σ0), Enzyme.Active(ρ0), Enzyme.Active(β0),
+            Enzyme.Active(x_s0), Enzyme.Active(y_s0), Enzyme.Active(z_s0), Enzyme.Active(θ0),
+            Enzyme.Const(u0_vec), Enzyme.Const(target_mat),
+            Enzyme.Const(window_length), Enzyme.Const(dt)
+        )
+        G = grads[1]
+        gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ = G[1], G[2], G[3], G[4], G[5], G[6], G[7]
+        loss_val = linear_enzyme_function_extended(σ0, ρ0, β0, x_s0, y_s0, z_s0, θ0,
+                                                u0_vec, target_mat, window_length, dt)
+        return loss_val, L63Parameters{T}(gσ, gρ, gβ, gx_s, gy_s, gz_s, gθ)
+
+    elseif loss_function === huber_enzyme_function
+        # choose δ by passing `nothing` to trigger your internal MAD-based estimator
+        δ = nothing
+        δ_scale = one(eltype(u0_vec)) * 1.345  # typed
+
+        grads = Enzyme.autodiff(
+            Enzyme.Reverse,
+            Enzyme.Const(huber_enzyme_function_pos),
+            Enzyme.Active(σ0), Enzyme.Active(ρ0), Enzyme.Active(β0),
+            Enzyme.Const(u0_vec), Enzyme.Const(target_mat),
+            Enzyme.Const(window_length), Enzyme.Const(dt),
+            Enzyme.Const(δ), Enzyme.Const(δ_scale)
+        )
+
+        gσ, gρ, gβ = grads[1], grads[2], grads[3]
+
+        loss_val = huber_enzyme_function_pos(
+            σ0, ρ0, β0, u0_vec, target_mat, window_length, dt, δ, δ_scale
+        )
+
+        return loss_val, L63Parameters{T}(gσ, gρ, gβ, zero(T), zero(T), zero(T), zero(T))
+
     else
         # For other loss functions, use a dedicated wrapper that works with Enzyme
         # We need to handle this case more carefully for Enzyme compatibility

@@ -10,7 +10,8 @@ export integrate, compute_loss, compute_gradients, compute_gradients_modular, co
 export modular_train!
 
 # Loss functions (using Flux.jl ecosystem)
-export window_mae, window_mse, weighted_window_loss, probabilistic_loss, adaptive_loss
+export window_linear, window_mae, window_mse, weighted_window_loss, probabilistic_loss, adaptive_loss,
+       huber_loss, mae, mse, huber_enzyme_function, pseudohuber_enzyme_function
 # Note: huber_loss, mae, mse are implemented internally - not re-exported from Flux
 
 # Training metrics and tracking

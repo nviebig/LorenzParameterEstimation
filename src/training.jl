@@ -142,19 +142,19 @@ function modular_train!(
     
     # Reproducibility
     rng::Random.AbstractRNG = Random.default_rng()      # Random number generator
-) where {T}
+    ) where {T}
     
     # Set default stride
     stride_val = isnothing(stride) ? window_size ÷ 2 : stride  # Default to half window size
     
-    # Generate window starting positions
+    # Number of starting indices for windows
     max_start = length(target_solution) - window_size    # Last valid start index
     max_start > 0 || throw(ArgumentError("Window size too large for trajectory"))   # Ensure we can create at least one window
     
     window_starts = collect(1:stride_val:max_start)      # Starting indices of windows
-    n_windows = length(window_starts)                    # Number of windows 
-    
-    # Train/validation split
+    n_windows = length(window_starts)                    # Number of windows
+
+    # Shuffle indices if specified
     indices = collect(1:n_windows)                      # Indices for shuffling
     if shuffle                                          # Shuffle if specified
         Random.shuffle!(rng, indices)                   # Shuffle indices
@@ -271,7 +271,7 @@ function modular_train!(
                 if track_gradients && metrics !== nothing
                     push!(batch_individual_gradients, grads)
                     
-                    # Record first gradient of the epoch (Milan's chaos evolution analysis)
+                    # Record first gradient of the epoch 
                     if !first_gradient_recorded
                         record_first_gradient_of_epoch!(metrics, grads)
                         first_gradient_recorded = true
