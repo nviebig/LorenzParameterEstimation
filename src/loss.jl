@@ -1151,7 +1151,7 @@ Windowed Huber loss for Lorenz-63.
 - If `δ` is provided, uses it directly.
 - Else estimates `δ = δ_scale * 1.4826 * MAD(residuals_init)` from a single rollout.
 
-Signature matches your other *\*_enzyme_function* losses.
+ Signature matches your other *_enzyme_function* losses.
 """
 function huber_enzyme_function(
     σ::T, ρ::T, β::T,
@@ -1412,7 +1412,7 @@ function compute_gradients_extended(
             Enzyme.Const(δ), Enzyme.Const(δ_scale)
         )
 
-        gσ, gρ, gβ = grads[1], grads[2], grads[3]
+        ((gσ, gρ, gβ, _...),) = grads
 
         loss_val = huber_enzyme_function_pos(
             σ0, ρ0, β0, u0_vec, target_mat, window_length, dt, δ, δ_scale
