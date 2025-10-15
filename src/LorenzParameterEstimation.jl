@@ -22,9 +22,8 @@ export TrainingMetrics, reset_metrics!, record_window_metrics!, record_batch_met
 export OptimizerConfig
 export adam_config, sgd_config, adamw_config, adagrad_config, rmsprop_config
 
-# Bayesian inference - requires Turing.jl
-# export bayesian_parameter_estimation, variational_inference, posterior_predictive_check
-# export lorenz_bayesian_model
+# Climate statistics training
+export train_climate, evaluate_climate_statistics, climate_statistics
 
 # Utility functions
 export lorenz_rhs, classic_params, stable_params, parameter_error
@@ -33,6 +32,9 @@ export with_coordinate_shifts, with_theta, classic_lorenz, has_coordinate_shifts
 # Visualization functions (loaded via extensions when Plots.jl is available)
 export plot_trajectory, plot_phase_portrait, animate_comparison, create_training_gif,
        plot_loss_evolution, plot_gradient_evolution, plot_gradient_scatter, create_gradient_chaos_gif
+
+# Climate statistics training
+export train_climate, evaluate_climate_statistics, climate_statistics, evaluate_statistics
 
 using LinearAlgebra
 using Statistics
@@ -45,6 +47,9 @@ include("integration.jl")
 include("loss.jl")
 include("optimizers.jl")
 include("training.jl")
+# Climate-focused training utilities
+include("training_climate.jl")
+using .TrainingClimate
 # include("bayesian.jl")  # Commented out - requires Turing.jl
 include("utils.jl")
 include("visualization.jl")

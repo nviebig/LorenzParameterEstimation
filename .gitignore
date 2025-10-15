@@ -1,0 +1,13 @@
+# Ignore large and unnecessary files
+examples/test_cases_milan/coordinate_shifts_test.ipynb
+examples/training_frames/*.png
+*.gif
+*.log
+*.tmp
+# Ignore Jupyter notebook checkpoints
+.ipynb_checkpoints/
+# Ignore OS and editor files
+.DS_Store
+*.swp
+*.swo
+*~
