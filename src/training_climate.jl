@@ -316,8 +316,6 @@ function train_climate(
 
         # Alias scalars for Enzyme call
         σ, ρ, β = pstate.σ[1], pstate.ρ[1], pstate.β[1]
-        x_s, y_s, z_s, θ = pstate.x_s[1], pstate.y_s[1], pstate.θ[1], pstate.θ[1]  # temp alias; fixed below
-        # NOTE: Correct θ alias:
         x_s, y_s, z_s, θ = pstate.x_s[1], pstate.y_s[1], pstate.z_s[1], pstate.θ[1]
 
         # Forward loss
