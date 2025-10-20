@@ -16,7 +16,7 @@ export TrainingMetrics, reset_metrics!, record_window_metrics!, record_batch_met
        record_epoch_metrics!, compute_gradient_statistics, compute_gradients_with_tracking
 export OptimizerConfig
 export adam_config, sgd_config, adamw_config, adagrad_config, rmsprop_config
-export train_statistics, evaluate_climate_statistics, climate_statistics
+export train_statistics, evaluate_climate_statistics, climate_statistics, soft_hist_3d, make_pdf_config, hard_hist_3d, soft_hist_3d_local
 export lorenz_rhs, classic_params, stable_params, parameter_error
 export with_coordinate_shifts, with_theta, classic_lorenz, has_coordinate_shifts, has_theta_modification, parameter_summary
 export plot_trajectory, plot_phase_portrait, animate_comparison, create_training_gif,

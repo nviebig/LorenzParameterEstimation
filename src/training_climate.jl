@@ -1,30 +1,52 @@
 module TrainingClimate
 
-# Draft: minimal, clean, modular training on TIME-SUBSAMPLED statistics (mean only for now).
-# - No warmup/window logic.
-# - One integration per IC for 'steps' and we sample k time rows per epoch.
-# - Optimisers.jl for updates, Enzyme for gradients.
-# - Update mask lets you choose which parameters to learn.
-#
-# Extend later by:
-#   * swapping the time sampler strategy
-# ------------------------------------------------------------------------------
 
 using Enzyme
 using Optimisers
 using StatsBase
 using Random
+using StatsBase
 using Printf: @printf, @sprintf
 
 import ..LorenzParameterEstimation
 using  ..LorenzParameterEstimation: L63Parameters, integrate
 
 
-export train_climate, evaluate_statistics, ClimateConfig, train_statistics
+export train_climate, evaluate_statistics, ClimateConfig, train_statistics, soft_hist_3d, make_pdf_config, hard_hist_3d, soft_hist_3d_local
 
 # ================================
 # Configuration
 # ================================
+
+Base.@kwdef struct PdfConfig{T}
+    centers::Vector{T}
+    bandwidth::T
+    loss_mode::Symbol
+    sinkhorn_ε::T
+    sinkhorn_iters::Int
+end
+
+# helper to build a PdfConfig from nbins/halfwidth (or explicit centers)
+function make_pdf_config(::Type{T};
+        nbins::Int=16,
+        range_halfwidth::Real=30.0,
+        centers::Union{Nothing,AbstractVector}=nothing,
+        bandwidth::Union{Nothing,Real}=nothing,
+        loss_mode::Symbol=:kl,
+        sinkhorn_ε::Real=1e-2,
+        sinkhorn_iters::Int=50) where {T}
+
+    C = centers === nothing ?
+        collect(range(T(-range_halfwidth), T(range_halfwidth); length=nbins)) :
+        T.(centers)
+
+    Δ = length(C) >= 2 ? (C[end]-C[1])/(length(C)-1) : T(1)
+    h = bandwidth === nothing ? T(0.5*Δ) : T(bandwidth)
+
+    return PdfConfig{T}(C, h, loss_mode, T(sinkhorn_ε), sinkhorn_iters)
+end
+ 
+# Configuration for training climate statistics
 
 Base.@kwdef struct ClimateConfig{T}
     dt::T            = T(0.01)
@@ -33,7 +55,12 @@ Base.@kwdef struct ClimateConfig{T}
     samples_per_epoch::Int = 256
     rng::Random.AbstractRNG = Random.default_rng()
     loss_mode::Symbol = :sse            # NEW: choose :sse, :mse, :rmse, :mae
+    pdf::PdfConfig{T} = make_pdf_config(T)   # <— NEW
 end
+
+
+
+
 """
     train_statistics(initial_params;
                     target,
@@ -71,35 +98,61 @@ function train_statistics(
     verbose::Bool=true,
     early_stopping_patience::Int=20,
     early_stopping_min_delta::Float64=1e-6,
+    rel_delta::Float64 = 1e-3, 
     gradient_verbose::Bool=false,
     refresh::Int=10,
-    pdf_loss_mode::Symbol=:kl,
-    bandwidth::Real=0.75,
-    sinkhorn_ε::Real=1e-2,
-    sinkhorn_iters::Int=50
+    gradient_clip_norm::Float64 = 1.0,
 )
+    # Type Promotion and Configuration 
+    #(Promotes types for all relevant variables to ensure consistency, Creates a type-stable ClimateConfig object for the training run.)
+    
     stats_tuple = stats isa Tuple ? stats : tuple(stats...)
     T = promote_type(typeof(initial_params.σ), eltype(base_u0), typeof(cfg.dt))
+
+    pdfT = PdfConfig{T}(
+        T.(cfg.pdf.centers),
+        T(cfg.pdf.bandwidth),
+        cfg.pdf.loss_mode,
+        T(cfg.pdf.sinkhorn_ε),
+        cfg.pdf.sinkhorn_iters
+    )
+
     cfgT = ClimateConfig{T}(
         dt = T(cfg.dt),
         steps = cfg.steps,
         initial_conditions = (cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
         samples_per_epoch = cfg.samples_per_epoch,
         rng = cfg.rng,
-        loss_mode = cfg.loss_mode
+        loss_mode = cfg.loss_mode,
+        pdf = pdfT,                                 # <-- preserve user PDF config (promoted)
     )
+
+    #  Convert base_u0 to T
     base_u0T = T.(base_u0)
 
-    # PDF mode detection
+    # PDF mode detection (Checks if any statistic in stats is :pdf3d to determine if PDF training is needed.)
     is_pdf = any(s -> s == :pdf3d, stats_tuple)
 
-    # Setup targets
+    # Setup targets (Prepares target statistics based on whether PDF training is selected or not.)
     if is_pdf
-        centers = T.(getfield(target, :centers))
+        centers  = cfgT.pdf.centers
+        hT       = cfgT.pdf.bandwidth
+        sinkεT   = cfgT.pdf.sinkhorn_ε
+        pdf_mode = cfgT.pdf.loss_mode
+
         p3d_tgt = T.(getfield(target, :p3d))
         s_p = sum(p3d_tgt); s_p > 0 && (p3d_tgt ./= s_p)
-        hT = T(bandwidth)
-        sinkεT = T(sinkhorn_ε)
+
+        # --- consistency check ---
+        if hasproperty(target, :centers)
+            tgt_centers = T.(getfield(target, :centers))
+            length(tgt_centers) == length(centers) ||
+                error("target centers length mismatch cfg.pdf.centers")
+            if maximum(abs.(tgt_centers .- centers)) > eps(T)*10
+                @warn "target centers differ from cfg.pdf.centers; training uses cfg.pdf grid; expect a loss floor"
+            end
+        end
+        
     else
         if !(target isa NamedTuple)
             error("target must be a NamedTuple, e.g., (mean = [mx,my,mz],).")
@@ -116,22 +169,26 @@ function train_statistics(
         end
     end
 
-    # Optimiser state
+    # Optimiser state (Initializes the optimizer state and parameter state for training.)
     pstate = _to_state(L63Parameters(T(initial_params.σ),T(initial_params.ρ),T(initial_params.β),
                                      T(initial_params.x_s),T(initial_params.y_s),T(initial_params.z_s),T(initial_params.θ)))
     ost = Optimisers.setup(optimizer, pstate)
 
+    # Bookkeeping (Initializes arrays for tracking losses and statistics history, as well as variables for early stopping.)
     losses = Vector{T}(undef, epochs)
     stats_history = Vector{Any}(undef, epochs)
+    param_history = Vector{Any}(undef, epochs)
     best_loss = Inf; best_params = nothing; patience_counter = 0; actual_epochs = 0
 
-    I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
+    # Initial stratified indices (Generates initial stratified time indices for sampling during training.)
+    I = jittered_grid_burnin(cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps); burn=0.3, jitter=0.35)
 
+    # Verbose output (Displays initial training configuration details if verbose mode is enabled.)
     if verbose
         numICs = (cfgT.initial_conditions === nothing) ? 1 : size(cfgT.initial_conditions,2)
         if is_pdf
             @printf("UnifiedTrain | PDF3D loss=%s | dt=%.4g steps=%d | ICs=%d | k=%d | bins=%d^3\n",
-                    string(pdf_loss_mode), T(cfgT.dt), cfgT.steps, numICs, cfgT.samples_per_epoch, length(centers))
+                    string(pdf_mode), T(cfgT.dt), cfgT.steps, numICs, cfgT.samples_per_epoch, length(centers))
         else
             @printf("UnifiedTrain | stats=%s | mask=%s | dt=%.4g steps=%d | ICs=%d | k=%d\n",
                     string(stats_tuple), string(update_mask), T(cfgT.dt), cfgT.steps, numICs, cfgT.samples_per_epoch)
@@ -139,18 +196,32 @@ function train_statistics(
         @printf("Init  | %s\n", _fmt_params(pstate))
     end
 
+    # Main training loop
     for epoch in 1:epochs
-        k = min(cfgT.samples_per_epoch, cfgT.steps); @assert k > 0
-        if epoch == 1 || (epoch % refresh == 1)
-            I = stratified_indices(cfgT.rng, cfgT.steps, k)
-        end
 
+        # --- prepare stratified time indices for this epoch ---
+        #k = min(cfgT.samples_per_epoch, cfgT.steps); @assert k > 0
+        k = min(cfgT.samples_per_epoch, cfgT.steps)
+        if epoch == 1 || (epoch % refresh == 1)
+            #k = min(cfgT.samples_per_epoch, cfgT.steps)
+            I = jittered_grid_burnin(cfgT.steps, k; burn=0.3, jitter=0.35)
+        end
+        # --- extract current params and epoch settings ---
         σ,ρ,β = pstate.σ[1], pstate.ρ[1], pstate.β[1]
         x_s,y_s,z_s,θ = pstate.x_s[1], pstate.y_s[1], pstate.z_s[1], pstate.θ[1]
         U_epoch = (cfgT.initial_conditions === nothing) ? reshape(T.(base_u0T),3,1) : T.(cfgT.initial_conditions)
         dt_epoch, steps_epoch = cfgT.dt, cfgT.steps
 
+        # ---- bandwidth annealing (smooth → sharp) ----
+        Δ = (centers[end]-centers[1]) / (length(centers)-1)   # grid spacing
+        h_start = T(3) * Δ                                    # very smooth at start
+        h_end   = T(0.7) * Δ                                  # sharp(er) at end
+        τ = T(800)                                            # decay time (epochs)
+        h_curr = h_end + (h_start - h_end) * exp(-T(epoch)/τ) # exponential schedule
+
+        # --- compute loss and gradients ---
         if is_pdf
+            # Defines a closure loss_entry_pdf3d that calls _loss_pdf_core_3d with the current parameters and epoch settings.
             @noinline function loss_entry_pdf3d(σ, ρ, β, x_s, y_s, z_s, θ,
                                                 dt::S, steps::Int,
                                                 U::AbstractMatrix{S}, I::AbstractVector{Int},
@@ -160,11 +231,16 @@ function train_statistics(
                 _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,
                                   dt, steps, U, I, centers, h, p3d_t, mode, sinkε, sinkiters)
             end
+            # Computes the loss for the current epoch using the loss_entry_pdf3d function.
             L = loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
-                                 dt_epoch, steps_epoch, U_epoch, I,
-                                 centers, hT, p3d_tgt,
-                                 pdf_loss_mode, sinkεT, sinkhorn_iters)
+                     dt_epoch, steps_epoch, U_epoch, I,
+                     centers, h_curr,                    # <— here
+                     p3d_tgt,
+                     pdf_mode, sinkεT, cfgT.pdf.sinkhorn_iters)
+
+            # Stores the computed loss for the current epoch.
             losses[epoch] = L
+            # Computes gradients using Enzyme's automatic differentiation for the loss_entry_pdf3d function.
             gtuple = Enzyme.autodiff(
                 Enzyme.set_runtime_activity(Enzyme.Reverse),
                 loss_entry_pdf3d,
@@ -172,18 +248,34 @@ function train_statistics(
                 Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
                 Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
                 Enzyme.Const(U_epoch), Enzyme.Const(I),
-                Enzyme.Const(centers), Enzyme.Const(hT),
+                Enzyme.Const(centers), Enzyme.Const(h_curr),  # <- was hT
                 Enzyme.Const(p3d_tgt),
-                Enzyme.Const(pdf_loss_mode), Enzyme.Const(sinkεT), Enzyme.Const(sinkhorn_iters),
+                Enzyme.Const(pdf_mode), Enzyme.Const(sinkεT), Enzyme.Const(cfgT.pdf.sinkhorn_iters),
             )
+            # Flattens the gradient tuple returned by Enzyme into a plain tuple for easier manipulation.
             g = _flatten_grads(gtuple)
+            # Constructs a gradient state NamedTuple from the flattened gradients.
             gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
                           x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
+            # Applies the update mask to the gradient state to zero out gradients for parameters not being updated.
             gstate = _mask_grads(gstate_all, update_mask)
+            # Verbose output (Displays gradient information if verbose mode is enabled.)
             gradient_verbose && @show gstate
+
+            # clip exploding gradients before optimizer update
+            gnorm_before = _gradnorm(gstate)
+            if gnorm_before > gradient_clip_norm
+                verbose && @printf("  Gradients clipped (norm %.3e > %.2f)\n", gnorm_before, gradient_clip_norm)
+            end
+            gstate = _clip_grads(gstate, gradient_clip_norm)  # threshold = 1.0 (tune as needed)
+            
+            old = _from_state(pstate)  # copy before update
             ost, pstate = Optimisers.update!(ost, pstate, gstate)
-            verbose && @printf("Epoch %4d | pdf3d-loss = %.6e | g_norm = %.3e\n", epoch, L, _gradnorm(gstate))
+            new = _from_state(pstate)
+
+            verbose && @printf("Epoch %4d | σ=%.6f (Δ%.2e)  ρ=%.6f (Δ%.2e)  β=%.6f (Δ%.2e)  | loss=%.6e | g_norm=%.3e\n",epoch,new.σ, new.σ - old.σ,new.ρ, new.ρ - old.ρ,new.β, new.β - old.β, L, _gradnorm(gstate))
         else
+            # Defines a closure loss_entry that calls _loss_subsample_core with the current parameters and epoch settings.
             @noinline function loss_entry(σ, ρ, β, x_s, y_s, z_s, θ,
                                           dt::S, steps::Int,
                                           U::AbstractMatrix{S},
@@ -219,6 +311,12 @@ function train_statistics(
                 end
                 println("-----------------------------")
             end
+            # clip exploding gradients before optimizer update
+            gnorm_before = _gradnorm(gstate)
+            if gnorm_before > gradient_clip_norm
+                verbose && @printf("  Gradients clipped (norm %.3e > %.2f)\n", gnorm_before, gradient_clip_norm)
+            end
+            gstate = _clip_grads(gstate, gradient_clip_norm)  # threshold = 1.0 (tune as needed)
             ost, pstate = Optimisers.update!(ost, pstate, gstate)
             verbose && @printf("Epoch %4d | loss = %.6e | g_norm = %.3e | %s\n",
                     epoch, L, _gradnorm(gstate), _fmt_params(pstate))
@@ -227,40 +325,56 @@ function train_statistics(
         # --- record statistics for this epoch (full trajectory) ---
         cur_params = _from_state(pstate)
         if is_pdf
-            stats_history[epoch] = (; pdf3d = _compute_pdf3d_statistic(
-                cur_params, cfgT, base_u0T, centers, hT, I))
+            stats_history[epoch] = (; pdf3d = _compute_pdf3d_statistic(cur_params, cfgT, base_u0T, cfgT.pdf.centers, h_curr, I))
+            param_history[epoch] = cur_params
         else
-            stats_history[epoch] = evaluate_statistics(
-                cur_params; cfg=cfgT, base_u0=base_u0T,
-                stats=stats_tuple, full_trajectory=true
-            )
+            stats_history[epoch] = evaluate_statistics(cur_params; cfg=cfgT, base_u0=base_u0T,stats=stats_tuple, full_trajectory=true)
+            param_history[epoch] = cur_params
         end
 
-        # Early stopping logic
-        if L < best_loss - early_stopping_min_delta
-            best_loss = L; best_params = deepcopy(cur_params); patience_counter = 0
+        # --- early stopping (absolute OR relative improvement) ---
+        # treat the very first valid loss as an improvement
+        is_valid = isfinite(L)
+
+        if best_loss == Inf
+            improved = is_valid
+        else
+            thresh = max(early_stopping_min_delta, rel_delta * abs(best_loss))
+            improved = is_valid && (best_loss - L) > thresh
+        end
+
+        if improved
+            best_loss = L
+            best_params = deepcopy(cur_params)
+            patience_counter = 0
         else
             patience_counter += 1
         end
+
         if patience_counter >= early_stopping_patience
             verbose && @printf("Early stopping at epoch %d | best_loss = %.6e\n", epoch, best_loss)
             break
         end
+
         actual_epochs += 1
     end
 
     # Truncate arrays to actual number of completed epochs
     losses = losses[1:actual_epochs]
     stats_history = stats_history[1:actual_epochs]
+    param_history = param_history[1:actual_epochs]
     final_params = best_params === nothing ? _from_state(pstate) : best_params
     if is_pdf
         Iall = collect(2:cfgT.steps+1)
+        # at the end
+        h_final = T(0.7) * ((centers[end]-centers[1]) / (length(centers)-1))
+        Iall = collect(2:cfgT.steps+1)
         final_stats = (; pdf3d = _compute_pdf3d_statistic(
-            final_params, cfgT, base_u0T, centers, hT, Iall))
+            final_params, cfgT, base_u0T, cfgT.pdf.centers, h_final, Iall))
     else
         final_stats  = evaluate_statistics(final_params; cfg=cfgT, base_u0=base_u0T, stats=stats_tuple, full_trajectory=true)
     end
-    return (params=final_params, loss_history=losses, final_statistics=final_stats, stats_history=stats_history)
+    return (params=final_params, loss_history=losses, final_statistics=final_stats, stats_history=stats_history, param_history=param_history)
 end
 
 const DEFAULT_MASK = (σ=true, ρ=true, β=true, x_s=false, y_s=false, z_s=false, θ=false)
@@ -401,11 +515,19 @@ end
 Return `k` time indices roughly evenly spaced across the trajectory
 range `2:steps+1`, one sample per segment. Guarantees broad coverage
 and sorted order.
+
+Makes sense depending on the inital condition: We choose the U_0 so that we are on the atttor.
+We could sample only from the later part of the trajectory to avoid transients, but stratified sampling
+helps ensure we get a good coverage of the attractor even for shorter trajectories
 """
 function stratified_indices(rng::AbstractRNG, steps::Int, k::Int)
+    # Ensure k is not greater than steps
     k = min(k, steps)
+    # Create stratified bins and sample one index from each bin
     bins = range(2, steps + 1; length = k + 1)
+    # Compute the bin centers
     I = Vector{Int}(undef, k)
+    # Sample one index from each bin
     @inbounds for j in 1:k
         lo = ceil(Int, bins[j])
         hi = floor(Int, bins[j + 1] - eps())
@@ -415,8 +537,47 @@ function stratified_indices(rng::AbstractRNG, steps::Int, k::Int)
         end
         I[j] = rand(rng, lo:hi)
     end
+    # Sort the indices to ensure they are in increasing order
     sort!(I)
+    # Return the stratified indices
     return I
+end
+
+"""
+    jittered_grid(steps::Int, k::Int; jitter=0.49)
+Return `k` time indices roughly evenly spaced across the trajectory
+range `2:steps+1`, one sample per segment, with jitter within each segment.
+
+Potentially useful alternative to `stratified_indices` to avoid clustering and more stable?
+"""
+function jittered_grid_burnin(steps::Int, k::Int; burn=0.3, jitter=0.35)
+    start = 2 + round(Int, burn*steps)
+    bins = range(start, steps+1; length=k+1)
+    I = Vector{Int}(undef,k)
+    @inbounds for j in 1:k
+        lo, hi = ceil(Int,bins[j]), floor(Int,bins[j+1]-eps())
+        mid = (lo + hi) ÷ 2
+        δ = max(0, round(Int, jitter*(hi-lo)/2))
+        I[j] = clamp(mid + rand((-δ):δ), lo, hi)
+    end
+    sort!(I); I
+end
+
+
+
+
+# ================================
+# Gradient clipping
+# ================================
+@inline function _clip_grads(g, max_norm::Real)
+    n = _gradnorm(g)
+    if n > max_norm && isfinite(n)
+        scale = max_norm / n
+        return (σ=g.σ .* scale, ρ=g.ρ .* scale, β=g.β .* scale,
+                x_s=g.x_s .* scale, y_s=g.y_s .* scale, z_s=g.z_s .* scale, θ=g.θ .* scale)
+    else
+        return g
+    end
 end
 
 
@@ -486,7 +647,7 @@ function _loss_subsample(σ, ρ, β, x_s, y_s, z_s, θ,
         idxp = 1
         nextI = I[idxp]
 
-        for step in 1:cfg.steps
+        for _ in 1:cfg.steps
             rk4_step!(u, p, cfg.dt, k1, k2, k3, k4, tmp) 
             trow += 1
             if trow == nextI
@@ -642,13 +803,23 @@ function evaluate_statistics(params::L63Parameters;
 
     stats_tuple = stats isa Tuple ? stats : tuple(stats...)
     T = promote_type(typeof(params.σ), eltype(base_u0), typeof(cfg.dt))
+
+    pdfT = PdfConfig{T}(
+        T.(cfg.pdf.centers),
+        T(cfg.pdf.bandwidth),
+        cfg.pdf.loss_mode,
+        T(cfg.pdf.sinkhorn_ε),
+        cfg.pdf.sinkhorn_iters
+    )
+
     cfgT = ClimateConfig{T}(
         dt = T(cfg.dt),
         steps = cfg.steps,
         initial_conditions = (cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
         samples_per_epoch = cfg.samples_per_epoch,
         rng = cfg.rng,
-        loss_mode = cfg.loss_mode,          # <-- keep the chosen loss here
+        loss_mode = cfg.loss_mode,
+        pdf = pdfT,                                 # <-- preserve user PDF config (promoted)
     )
     base_u0T = T.(base_u0)
 
@@ -666,220 +837,6 @@ function evaluate_statistics(params::L63Parameters;
     end
 end
 
-"""
-    train_climate(initial_params;
-                  target_stats,                # NamedTuple, e.g. (mean = [mx,my,mz],)
-                  stats=(:mean,),
-                  cfg=ClimateConfig(dt=0.01, steps=4000, samples_per_epoch=256),
-                  base_u0=[1,1,1],
-                  optimizer=Optimisers.Adam(1e-3),
-                  update_mask=DEFAULT_MASK,
-                  epochs=200,
-                  verbose=true)
-
-Stochastic time-subsampling training:
-- Integrate each IC once for 'steps'.
-- Per epoch, sample `cfg.samples_per_epoch` time rows (same I for all ICs that epoch).
-- Compute chosen stats (currently `:mean`) on those rows and backprop with Enzyme.
-- Optimisers.jl applies the masked update.
-
-Returns (params, loss_history, final_statistics).
-"""
-function train_climate(
-    initial_params::L63Parameters;                  # initial guess         
-    target_stats,                                   # NamedTuple, e.g. (mean = [mx,my,mz],)     
-    stats::Union{Tuple,AbstractVector}=(:mean,),    # which stats to match
-    cfg::ClimateConfig=ClimateConfig(               # configuration
-        dt=0.01, 
-        steps=4000,                                 
-        samples_per_epoch=256),
-
-    base_u0::AbstractVector=[1.0,1.0,1.0],           # base IC if cfg.initial_conditions=nothing
-    optimizer=Optimisers.Adam(1e-3),                 # Optimisers.jl optimizer
-    update_mask=DEFAULT_MASK,                        # which params to update (NamedTuple of Bools)
-    epochs::Int=200,                                 # training epochs 
-    verbose::Bool=true,                              # verbose output
-    early_stopping_patience::Int=20,                 # early stopping patience (epochs)
-
-    early_stopping_min_delta::Float64=1e-6,          # min improvement to reset patience
-    gradient_verbose::Bool=false,                     # print gradients if true
-    refresh::Int=10     
-    )
-
-    stats_tuple = stats isa Tuple ? stats : tuple(stats...)
-    # Type promotion
-    T = promote_type(typeof(initial_params.σ), eltype(base_u0), typeof(cfg.dt))
-    cfgT = ClimateConfig{T}(
-        dt = T(cfg.dt),
-        steps = cfg.steps,
-        initial_conditions = (cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
-        samples_per_epoch = cfg.samples_per_epoch,
-        rng = cfg.rng,
-        loss_mode = cfg.loss_mode
-    )
-    base_u0T = T.(base_u0)
-
-    # Type-coerced targets (expect fields matching 'stats')
-    if !(target_stats isa NamedTuple)
-        error("target_stats must be a NamedTuple, e.g., (mean = [mx,my,mz],).")
-    end
-    # coerce each field to T and build a NamedTuple with same keys
-    tgt = (; (k => T.(v) for (k,v) in pairs(target_stats))... )
-
-    # Build flattened target vector in the same order as stats_tuple
-    target_vec = Vector{T}(undef, 3 * length(stats_tuple))
-    idxt = 1
-    for s in stats_tuple
-        hasproperty(tgt, s) || error("target_stats must contain field $(s)")
-        v = getfield(tgt, s)
-        @assert length(v) == 3 "each target stat must be length-3"
-        target_vec[idxt:idxt+2] = T.(v)
-        idxt += 3
-    end
-
-    # Optimiser state
-    pstate = _to_state(L63Parameters(T(initial_params.σ),T(initial_params.ρ),T(initial_params.β),
-                                     T(initial_params.x_s),T(initial_params.y_s),T(initial_params.z_s),T(initial_params.θ)))
-    ost = Optimisers.setup(optimizer, pstate)
-
-    losses = Vector{T}(undef, epochs)
-    stats_history = Vector{NamedTuple}(undef, epochs)  # <— per-epoch statistics
-
-    if verbose
-        numICs = (cfgT.initial_conditions === nothing) ? 1 : size(cfgT.initial_conditions,2)
-        @printf("Setup | stats=%s | mask=%s | dt=%.4g steps=%d | ICs=%d | k=%d\n",
-                string(stats_tuple), string(update_mask), T(cfgT.dt), cfgT.steps, numICs, cfgT.samples_per_epoch)
-        @printf("Init  | %s\n", _fmt_params(pstate))
-    end
-
-    # Early stopping state
-    best_loss = Inf
-    best_params = nothing
-    patience_counter = 0
-    actual_epochs = 0
-
-    # Initial stratified indices
-    I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
-
-    # Training loop
-    for epoch in 1:epochs
-        # sample time indices (as you already do)
-        k = min(cfgT.samples_per_epoch, cfgT.steps)
-        @assert k > 0
-
-        # Replace with stratified sampling to ensure better coverage
-        if epoch == 1
-            I = stratified_indices(cfgT.rng, cfgT.steps, k)
-        elseif epoch % refresh == 1
-            I = stratified_indices(cfgT.rng, cfgT.steps, k)
-        end
-
-        # current scalar params
-        σ, ρ, β = pstate.σ[1], pstate.ρ[1], pstate.β[1]
-        x_s, y_s, z_s, θ = pstate.x_s[1], pstate.y_s[1], pstate.z_s[1], pstate.θ[1]
-
-        # concretize ICs to avoid Union in closure
-        U_epoch = (cfgT.initial_conditions === nothing) ?
-                reshape(T.(base_u0T), 3, 1) :
-                T.(cfgT.initial_conditions)
-
-        # Non-capturing loss entry: ALL context passed as arguments
-        @noinline function loss_entry(σ, ρ, β, x_s, y_s, z_s, θ,
-                                      dt::S, steps::Int,
-                                      U::AbstractMatrix{S},
-                                      target::AbstractVector{S},
-                                      I::AbstractVector{Int},
-                                      stats_nt::NTuple{M,Symbol},
-                                      loss_mode::Symbol)::S where {S<:Real, M}
-            _loss_subsample_core(σ, ρ, β, x_s, y_s, z_s, θ,
-                                dt, steps, U, target, I, stats_nt, loss_mode)
-        end
-
-        # ---- prepare concrete context ----
-        U_epoch = (cfgT.initial_conditions === nothing) ? reshape(T.(base_u0T), 3, 1) : T.(cfgT.initial_conditions)
-        dt_epoch    = cfgT.dt
-        steps_epoch = cfgT.steps
-        loss_mode_sym = cfgT.loss_mode
-
-        # ---- forward ----
-        L = loss_entry(σ, ρ, β, x_s, y_s, z_s, θ,
-                    dt_epoch, steps_epoch, U_epoch, target_vec, I, stats_tuple, loss_mode_sym)
-        losses[epoch] = L
-
-        # ---- reverse (note the extra Const args) ----
-        # Use runtime-activity mode so Enzyme can handle any runtime-allocated constant memory
-        # (avoids "Constant memory is stored (or returned) to a differentiable variable" errors)
-        gtuple = Enzyme.autodiff(
-            Enzyme.set_runtime_activity(Enzyme.Reverse),
-            loss_entry,
-            Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
-            Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
-            Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
-            Enzyme.Const(U_epoch), Enzyme.Const(target_vec), Enzyme.Const(I),
-            Enzyme.Const(stats_tuple), Enzyme.Const(loss_mode_sym),
-        )
-
-        g = _flatten_grads(gtuple)
-        gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
-                    x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
-        gstate = _mask_grads(gstate_all, update_mask)
-
-
-        # Print gradients for debugging if requested
-        if gradient_verbose
-            println("--- Gradient for epoch ", epoch, " ---")
-            println("gstate (parameter gradients):")
-            for (k, v) in pairs(gstate)
-                println("  ", k, ": ", v)
-            end
-            println("-----------------------------")
-        end
-
-        # optimiser step
-        ost, pstate = Optimisers.update!(ost, pstate, gstate)
-
-        # --- record statistics for this epoch (full trajectory) ---
-        cur_params = _from_state(pstate)
-        stats_history[epoch] = evaluate_statistics(
-            cur_params; cfg=cfgT, base_u0=base_u0T,
-            stats=stats_tuple, full_trajectory=true
-        )
-
-        # Early stopping logic
-        if L < best_loss - early_stopping_min_delta
-            println("[EarlyStopping] best_loss updated: ", best_loss, " → ", L, " at epoch ", epoch)
-            best_loss = L
-            best_params = deepcopy(cur_params)
-            patience_counter = 0
-        else
-            patience_counter += 1
-        end
-
-        if verbose
-            @printf("Epoch %4d | loss = %.6e | g_norm = %.3e | %s\n",
-                    epoch, L, _gradnorm(gstate), _fmt_params(pstate))
-        end
-
-        if patience_counter >= early_stopping_patience
-            if verbose
-                @printf("Early stopping at epoch %d | best_loss = %.6e\n", epoch, best_loss)
-            end
-            break
-        end
-        actual_epochs += 1
-    end
-
-    # Truncate arrays to actual number of completed epochs
-    losses = losses[1:actual_epochs]
-    stats_history = stats_history[1:actual_epochs]
-
-    # Use best_params if early stopping triggered, else last
-    final_params = best_params === nothing ? _from_state(pstate) : best_params
-    # For reporting: evaluate on FULL trajectory (all rows)
-    final_stats  = evaluate_statistics(final_params; cfg=cfgT, base_u0=base_u0T, stats=stats_tuple, full_trajectory=true)
-
-    return (params=final_params, loss_history=losses, final_statistics=final_stats, stats_history=stats_history)
-end
 
 # ================================
 # 3D histogram and divergence losses
@@ -913,6 +870,88 @@ end
         @inbounds out ./= s
     else
         @inbounds fill!(out, one(T)/length(out))
+    end
+    return nothing
+end
+
+
+# fast soft histogram: only visit bins within ±R of nearest center (uniform grid assumed)
+function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::AbstractVector{T},
+                            centers::AbstractVector{T}, h::T, out::AbstractVector{T};
+                            R::Int = 3) where {T}
+    m = length(centers); @assert length(out) == m*m*m
+    fill!(out, zero(T))
+    Δ = (centers[end]-centers[1])/(m-1)                  # uniform
+    inv2h2 = one(T)/(2*h*h)
+    invΔ   = one(T)/Δ
+
+    @inbounds for s in eachindex(xs)
+        # nearest bin indices
+        ix0 = clamp( Int(round((xs[s]-centers[1])*invΔ)) + 1, 1, m )
+        iy0 = clamp( Int(round((ys[s]-centers[1])*invΔ)) + 1, 1, m )
+        iz0 = clamp( Int(round((zs[s]-centers[1])*invΔ)) + 1, 1, m )
+
+        iL = max(1, ix0-R); iH = min(m, ix0+R)
+        jL = max(1, iy0-R); jH = min(m, iy0+R)
+        kL = max(1, iz0-R); kH = min(m, iz0+R)
+
+        for i in iL:iH
+            dx2 = (xs[s]-centers[i])^2
+            ex = exp(-dx2*inv2h2)
+            for j in jL:jH
+                dy2 = (ys[s]-centers[j])^2
+                exy = ex * exp(-dy2*inv2h2)
+                base = (i-1)*m*m + (j-1)*m
+                for k in kL:kH
+                    dz2 = (zs[s]-centers[k])^2
+                    out[base + k] += exy * exp(-dz2*inv2h2)
+                end
+            end
+        end
+    end
+    s = sum(out); s > eps(T) ? (out ./= s) : fill!(out, one(T)/length(out))
+    return nothing
+end
+
+
+
+# "Normal" binned 3D PDF (histogram) — no kernel smoothing
+# Assumes 'centers' are uniformly spaced; 'out' is length nbins^3 and flattened
+# as (i-1)*m*m + (j-1)*m + k with i,j,k in 1:m.
+# Hard 3D histogram using bin edges from midpoints of centers
+@inline function hard_hist_3d(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::AbstractVector{T},
+                              centers::AbstractVector{T}, out::AbstractVector{T}) where {T}
+    m = length(centers)
+    @assert length(out) == m*m*m
+
+    # Build edges by midpoints; extrapolate half-step at both ends
+    edges = Vector{T}(undef, m + 1)
+    @inbounds begin
+        # interior midpoints
+        for i in 2:m
+            edges[i] = (centers[i-1] + centers[i]) / 2
+        end
+        # end caps using local spacing (robust to mild non-uniformity)
+        edges[1]   = centers[1]  - (centers[2]     - centers[1])     / 2
+        edges[m+1] = centers[m]  + (centers[m]     - centers[m-1])   / 2
+    end
+
+    fill!(out, zero(T))
+    ns = length(xs)
+
+    @inbounds for s in 1:ns
+        i = clamp(searchsortedlast(edges, xs[s]), 1, m)
+        j = clamp(searchsortedlast(edges, ys[s]), 1, m)
+        k = clamp(searchsortedlast(edges, zs[s]), 1, m)
+        out[(i-1)*m*m + (j-1)*m + k] += one(T)
+    end
+
+    s = sum(out)
+    if s > 0
+        out ./= s
+    else
+        # degenerate case: no samples → fallback to uniform
+        fill!(out, one(T) / (m*m*m))
     end
     return nothing
 end
@@ -986,28 +1025,38 @@ function _sinkhorn_wasserstein_nd(p::AbstractVector{T}, q::AbstractVector{T},
 end
 
 # --- 3D pdf loss core (Enzyme-friendly) --------------------------------------
-function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,
-                           dt::S, steps::Int,
-                           U::AbstractMatrix{S},              # 3×B ICs
-                           I::AbstractVector{Int},            # subsampled time indices
-                           centers::AbstractVector{S},        # 1D bin centers (shared for x,y,z)
+function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,         # 7 trainable scalars
+                           dt::S, steps::Int,                 # integrator controls
+                           U::AbstractMatrix{S},              # 3×B initial conditions (columns)
+                           I::AbstractVector{Int},            # k time indices in 2:steps+1
+                           centers::AbstractVector{S},        # length m, shared for x,y,z
                            h::S,                              # Gaussian bandwidth
-                           p3d_tgt::AbstractVector{S},        # target flattened 3D pdf (length m^3)
-                           loss_mode::Symbol,
+                           p3d_tgt::AbstractVector{S},        # target pdf (length m^3), normalized
+                           loss_mode::Symbol,                 # :kl, :cross_entropy, :wasserstein
                            sink_ε::S, sink_iters::Int)::S where {S<:Real}
-
+    
+    # integrate each IC once for 'steps', sample at I, build 3D pdf, compute loss vs target pdf
     p = L63Parameters(S(σ),S(ρ),S(β),S(x_s),S(y_s),S(z_s),S(θ))
-    B = size(U,2)
-    k = length(I)
-    nx = k*B
+    B = size(U,2)       # number of initial conditions
+    k = length(I)       # number of sampled time indices
+    nx = k*B            # total sampled points
     xs = Vector{S}(undef, nx); ys = similar(xs); zs = similar(xs)
     idx = 1
-
+    
+    # for each inital condition, integrate and sample at I
     @inbounds for b in 1:B
+        # current state
         u   = copy(@view U[:,b])
-        k1  = similar(u); k2 = similar(u); k3 = similar(u); k4 = similar(u)
+        # intermediate steps
+        k1  = similar(u); 
+        k2 = similar(u); 
+        k3 = similar(u); 
+        k4 = similar(u)
+        # temporary storage
         tmp = similar(u)
+        # time row tracking
         trow = 1; idxp = 1; nextI = I[idxp]
+        # integrate and sample
         for _ in 1:steps
             rk4_step!(u, p, dt, k1, k2, k3, k4, tmp)
             trow += 1
@@ -1019,12 +1068,15 @@ function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,
             end
         end
     end
-
+    # Compute the 3D PDF
     m = length(centers)
     n = m*m*m
     p3d = Vector{S}(undef, n)
-    soft_hist_3d(xs, ys, zs, centers, h, p3d)
+    # Differentiable surrogate for training
+    # soft_hist_3d(xs, ys, zs, centers, h, p3d)  # old
+    soft_hist_3d_local(xs, ys, zs, centers, h, p3d; R=3)  # new (≈100–1000× faster)
 
+    # Computes the loss between the predicted and target PDF using the selected mode
     if loss_mode === :cross_entropy
         return _cross_entropy_vec(p3d_tgt, p3d)
     elseif loss_mode === :kl
@@ -1032,7 +1084,7 @@ function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,
     elseif loss_mode === :wasserstein
         return _sinkhorn_wasserstein_nd(p3d_tgt, p3d, centers; ε=sink_ε, n_iter=sink_iters)
     else
-        error("Unknown pdf loss mode: $loss_mode")
+        error("Unknown pdf loss mode: $loss_mode, must be :kl, :cross_entropy, or :wasserstein")
     end
 end
 
@@ -1042,22 +1094,27 @@ function _compute_pdf3d_statistic(params::L63Parameters{S},
                                   centers::AbstractVector{S},
                                   h::S,
                                   I::AbstractVector{Int}) where {S<:Real}
+
+    @assert length(I) > 0 "At least one time index must be provided"
+    # initial conditions
     U = cfg.initial_conditions === nothing ? reshape(S.(base_u0), 3, 1) : S.(cfg.initial_conditions)
     _assert_ics(U)
-
+    # parameters
     p = L63Parameters(S(params.σ), S(params.ρ), S(params.β),
                       S(params.x_s), S(params.y_s), S(params.z_s), S(params.θ))
-
+    # prepare storage
     B = size(U,2)
     k = length(I)
     @assert k > 0 "PDF statistic requires at least one sampled time index"
 
+    # extract sampled points
     nx = k * B
     xs = Vector{S}(undef, nx)
     ys = similar(xs)
     zs = similar(xs)
     idx = 1
 
+    
     @inbounds for b in 1:B
         u   = copy(@view U[:,b])
         k1  = similar(u); k2 = similar(u); k3 = similar(u); k4 = similar(u)
@@ -1077,123 +1134,10 @@ function _compute_pdf3d_statistic(params::L63Parameters{S},
 
     m = length(centers)
     p3d = Vector{S}(undef, m*m*m)
-    soft_hist_3d(xs, ys, zs, centers, h, p3d)
+    hard_hist_3d(xs, ys, zs, centers, p3d)
     sum_p = sum(p3d)
     sum_p > 0 && (p3d ./= sum_p)
     return (; centers=centers, p3d=p3d)
-end
-
-# ================================
-# Public API for PDF training
-# ================================
-
-function train_pdf_3d(
-    initial_params::L63Parameters;
-    target_pdf::NamedTuple,                      # (centers=..., p3d=...) where p3d is flattened vector length m^3
-    cfg::ClimateConfig=ClimateConfig(dt=0.01, steps=4000, samples_per_epoch=512),
-    base_u0::AbstractVector=[1.0,1.0,1.0],
-    optimizer=Optimisers.Adam(1e-3),
-    update_mask=DEFAULT_MASK,
-    loss_mode::Symbol=:kl,                       # :kl | :cross_entropy | :wasserstein
-    bandwidth::Real=0.75,
-    sinkhorn_ε::Real=1e-2, sinkhorn_iters::Int=50,
-    refresh::Int=10,
-    epochs::Int=200, verbose::Bool=true,
-    early_stopping_patience::Int=20, early_stopping_min_delta::Float64=1e-6,
-    gradient_verbose::Bool=false
-)
-    T = promote_type(typeof(initial_params.σ), eltype(base_u0), typeof(cfg.dt))
-    cfgT = ClimateConfig{T}(
-        dt=T(cfg.dt), steps=cfg.steps,
-        initial_conditions=(cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
-        samples_per_epoch=cfg.samples_per_epoch, rng=cfg.rng, loss_mode=cfg.loss_mode
-    )
-    base_u0T = T.(base_u0)
-
-    centers = T.(getfield(target_pdf, :centers)) # 1D centers
-    p3d_tgt = T.(getfield(target_pdf, :p3d))     # flattened target
-    s_p = sum(p3d_tgt); s_p > 0 && (p3d_tgt ./= s_p)
-
-    pstate = _to_state(L63Parameters(T(initial_params.σ),T(initial_params.ρ),T(initial_params.β),
-                                     T(initial_params.x_s),T(initial_params.y_s),T(initial_params.z_s),T(initial_params.θ)))
-    ost = Optimisers.setup(optimizer, pstate)
-
-    losses = Vector{T}(undef, epochs)
-    best_loss = Inf; best_params = nothing
-    patience = 0; actual_epochs = 0
-
-    I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
-
-    @noinline function loss_entry_pdf3d(σ, ρ, β, x_s, y_s, z_s, θ,
-                                        dt::S, steps::Int,
-                                        U::AbstractMatrix{S}, I::AbstractVector{Int},
-                                        centers::AbstractVector{S}, h::S,
-                                        p3d_t::AbstractVector{S},
-                                        mode::Symbol, sinkε::S, sinkiters::Int)::S where {S<:Real}
-        _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,
-                          dt, steps, U, I, centers, h, p3d_t, mode, sinkε, sinkiters)
-    end
-
-    if verbose
-        numICs = (cfgT.initial_conditions === nothing) ? 1 : size(cfgT.initial_conditions,2)
-        @printf("PDF-Train-3D | loss=%s | dt=%.4g steps=%d | ICs=%d | k=%d | bins=%d^3\n",
-                string(loss_mode), T(cfgT.dt), cfgT.steps, numICs, cfgT.samples_per_epoch, length(centers))
-    end
-
-    for epoch in 1:epochs
-        k = min(cfgT.samples_per_epoch, cfgT.steps); @assert k > 0
-        if epoch == 1 || (epoch % refresh == 1)
-            I = stratified_indices(cfgT.rng, cfgT.steps, k)
-        end
-
-        σ,ρ,β = pstate.σ[1], pstate.ρ[1], pstate.β[1]
-        x_s,y_s,z_s,θ = pstate.x_s[1], pstate.y_s[1], pstate.z_s[1], pstate.θ[1]
-
-        U_epoch = (cfgT.initial_conditions === nothing) ? reshape(T.(base_u0T),3,1) : T.(cfgT.initial_conditions)
-        dt_epoch, steps_epoch = cfgT.dt, cfgT.steps
-        hT = T(bandwidth); sinkεT = T(sinkhorn_ε)
-
-        # forward
-        L = loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
-                             dt_epoch, steps_epoch, U_epoch, I,
-                             centers, hT, p3d_tgt,
-                             loss_mode, sinkεT, sinkhorn_iters)
-        losses[epoch] = L
-
-        # reverse via Enzyme
-        gtuple = Enzyme.autodiff(
-            Enzyme.set_runtime_activity(Enzyme.Reverse),
-            loss_entry_pdf3d,
-            Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
-            Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
-            Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
-            Enzyme.Const(U_epoch), Enzyme.Const(I),
-            Enzyme.Const(centers), Enzyme.Const(hT),
-            Enzyme.Const(p3d_tgt),
-            Enzyme.Const(loss_mode), Enzyme.Const(sinkεT), Enzyme.Const(sinkhorn_iters),
-        )
-
-        g = _flatten_grads(gtuple)
-        gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
-                      x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
-        gstate = _mask_grads(gstate_all, update_mask)
-
-        gradient_verbose && @show gstate
-        ost, pstate = Optimisers.update!(ost, pstate, gstate)
-
-        if L < best_loss - T(early_stopping_min_delta)
-            best_loss = L; best_params = _from_state(pstate); patience = 0
-        else
-            patience += 1
-        end
-        verbose && @printf("Epoch %4d | pdf3d-loss = %.6e | g_norm = %.3e\n", epoch, L, _gradnorm(gstate))
-        if patience >= early_stopping_patience; break; end
-        actual_epochs += 1
-    end
-
-    losses = losses[1:max(actual_epochs,1)]
-    final_params = best_params === nothing ? _from_state(pstate) : best_params
-    return (params=final_params, loss_history=losses)
 end
 
 end # module
