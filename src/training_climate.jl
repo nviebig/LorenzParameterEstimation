@@ -1,23 +1,108 @@
-module TrainingClimate
+# ==========================================
+# LorenzParameterEstimation: TrainingClimate
+# ==========================================
 
+# --- Imports and Exports ---
+# Exported functions: train_climate, evaluate_statistics, ClimateConfig, train_statistics
+
+# --- Configuration Types ---
+# ClimateConfig: Holds simulation and training parameters for Lorenz system fitting
+
+# --- Main Training Function ---
+# train_statistics: Runs the training loop for parameter estimation
+#   - Simulates Lorenz system for each initial condition (IC)
+#   - Computes statistics (mean, PDF, etc.)
+#   - Calculates loss and updates parameters using chosen optimizer
+#   - Supports early stopping, gradient clipping, and verbose output
+
+# --- PDF and Loss Functions ---
+# soft_hist_3d: Kernel density estimation for 3D PDFs
+# _loss_pdf_core_3d: Computes PDF loss for ensemble of ICs
+#   - Pools all sampled points from all ICs
+#   - Computes a single PDF from the union of points
+#   - Compares to target PDF using KL, cross-entropy, or Wasserstein loss
+
+# --- Utility Functions ---
+# stratified_indices: Generates stratified time indices for sampling
+# _mask_grads: Applies update mask to gradients
+# _clip_grads: Clips gradients to prevent exploding updates
+# _gradnorm: Computes norm of gradient for diagnostics
+
+# --- Debugging and Verbose Output ---
+# Print statements for inspecting training progress, gradients, and PDF statistics
+
+# --- TODO ---
+# - Add parameter history tracking to train_statistics
+# - Refactor PDF averaging for per-IC statistics if needed
+
+# ==========================================
+# LorenzParameterEstimation: TrainingClimate
+# ==========================================
+
+# --- Imports and Exports ---
+# (List of modules and exported functions)
+
+# --- Configuration Types ---
+# ClimateConfig: Holds simulation and training parameters
+
+# --- Main Training Function ---
+# train_statistics: Runs training loop for parameter estimation
+#   - Simulates Lorenz system for each initial condition
+#   - Computes statistics (mean, PDF, etc.)
+#   - Calculates loss and updates parameters
+
+# --- PDF and Loss Functions ---
+# soft_hist_3d: Kernel density estimation for 3D PDFs
+# _loss_pdf_core_3d: Computes PDF loss for ensemble of ICs
+
+# --- Utility Functions ---
+# stratified_indices: Generates stratified time indices for sampling
+# _mask_grads: Applies update mask to gradients
+
+# --- Debugging and Verbose Output ---
+# (Print statements for inspecting training progress)
+
+# --- TODO ---
+# - Add parameter history tracking to train_statistics
+# - Refactor PDF averaging for per-IC statistics
+
+
+module TrainingClimate
 
 using Enzyme
 using Optimisers
-using StatsBase
 using Random
 using StatsBase
 using Printf: @printf, @sprintf
+
+# Optional Checkpointing.jl integration (reduces Enzyme reverse-mode replay cost)
+const _HAVE_CHECKPOINTING = let
+    try
+        @eval import Checkpointing
+        true
+    catch _
+        false
+    end
+end
+
+macro maybe_checkpoint(expr)
+    if _HAVE_CHECKPOINTING
+        return :(Checkpointing.@checkpoint $(esc(expr)))
+    else
+        return esc(expr)
+    end
+end
 
 import ..LorenzParameterEstimation
 using  ..LorenzParameterEstimation: L63Parameters, integrate
 
 
-export train_climate, evaluate_statistics, ClimateConfig, train_statistics, soft_hist_3d, make_pdf_config, hard_hist_3d, soft_hist_3d_local
-
+export train_climate, evaluate_statistics, ClimateConfig, train_statistics,soft_hist_3d, make_pdf_config, hard_hist_3d, soft_hist_3d_local, PdfSchedule
 # ================================
 # Configuration
 # ================================
 
+# PDF configuration for 3D histograms
 Base.@kwdef struct PdfConfig{T}
     centers::Vector{T}
     bandwidth::T
@@ -25,6 +110,15 @@ Base.@kwdef struct PdfConfig{T}
     sinkhorn_ε::T
     sinkhorn_iters::Int
 end
+# convenience “default” constructor for a given T, controlls the smooth to sharp transition
+struct PdfSchedule{T}
+    h_start_mult::T
+    h_end_mult::T
+    tau::T
+end
+
+# convenience “default” constructor for a given T
+PdfSchedule(::Type{T}) where {T} = PdfSchedule{T}(T(3), T(0.7), T(800))
 
 # helper to build a PdfConfig from nbins/halfwidth (or explicit centers)
 function make_pdf_config(::Type{T};
@@ -48,16 +142,48 @@ end
  
 # Configuration for training climate statistics
 
-Base.@kwdef struct ClimateConfig{T}
-    dt::T            = T(0.01)
-    steps::Int       = 4000
-    initial_conditions::Union{Nothing,AbstractMatrix{T}} = nothing
-    samples_per_epoch::Int = 256
-    rng::Random.AbstractRNG = Random.default_rng()
-    loss_mode::Symbol = :sse            # NEW: choose :sse, :mse, :rmse, :mae
-    pdf::PdfConfig{T} = make_pdf_config(T)   # <— NEW
+struct ClimateConfig{T}
+    dt::T
+    steps::Int
+    initial_conditions::Union{Nothing,AbstractMatrix{T}}
+    samples_per_epoch::Int
+    rng::Random.AbstractRNG
+    loss_mode::Symbol
+    pdf::PdfConfig{T}
+    schedule::PdfSchedule{T}
 end
 
+# Default constructor for a given element type T
+function ClimateConfig(::Type{T};
+    dt = T(0.01),
+    steps::Int = 4000,
+    initial_conditions::Union{Nothing,AbstractMatrix{T}} = nothing,
+    samples_per_epoch::Int = 256,
+    rng::Random.AbstractRNG = Random.default_rng(),
+    loss_mode::Symbol = :sse,
+    pdf::PdfConfig{T} = make_pdf_config(T),
+    schedule::PdfSchedule{T} = PdfSchedule(T),
+) where {T}
+    ClimateConfig{T}(dt, steps, initial_conditions, samples_per_epoch, rng, loss_mode, pdf, schedule)
+end
+
+# Convenience constructor that infers T from dt / ICs / pdf
+function ClimateConfig(; dt::Real=0.01, steps::Int=4000,
+    initial_conditions=nothing, samples_per_epoch::Int=256,
+    rng::Random.AbstractRNG=Random.default_rng(), loss_mode::Symbol=:sse,
+    pdf=make_pdf_config(Float64), schedule=PdfSchedule(Float64))
+
+    T = promote_type(typeof(dt),
+        initial_conditions === nothing ? Float64 : eltype(initial_conditions),
+        typeof(pdf.bandwidth))
+
+    pdfT = PdfConfig{T}(T.(pdf.centers), T(pdf.bandwidth), pdf.loss_mode,
+                        T(pdf.sinkhorn_ε), pdf.sinkhorn_iters)
+    schedT = PdfSchedule{T}(T(schedule.h_start_mult), T(schedule.h_end_mult), T(schedule.tau))
+    icT = initial_conditions === nothing ? nothing : T.(initial_conditions)
+
+    ClimateConfig{T}(T(dt), steps, icT, samples_per_epoch, rng, loss_mode, pdfT, schedT)
+end
 
 
 
@@ -109,6 +235,12 @@ function train_statistics(
     stats_tuple = stats isa Tuple ? stats : tuple(stats...)
     T = promote_type(typeof(initial_params.σ), eltype(base_u0), typeof(cfg.dt))
 
+    scheduleT = PdfSchedule{T}(
+    T(cfg.schedule.h_start_mult),
+    T(cfg.schedule.h_end_mult),
+    T(cfg.schedule.tau)
+)
+
     pdfT = PdfConfig{T}(
         T.(cfg.pdf.centers),
         T(cfg.pdf.bandwidth),
@@ -117,14 +249,15 @@ function train_statistics(
         cfg.pdf.sinkhorn_iters
     )
 
-    cfgT = ClimateConfig{T}(
+    cfgT = ClimateConfig(T;
         dt = T(cfg.dt),
         steps = cfg.steps,
         initial_conditions = (cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
         samples_per_epoch = cfg.samples_per_epoch,
         rng = cfg.rng,
         loss_mode = cfg.loss_mode,
-        pdf = pdfT,                                 # <-- preserve user PDF config (promoted)
+        pdf = pdfT,
+        schedule = scheduleT,
     )
 
     #  Convert base_u0 to T
@@ -181,7 +314,8 @@ function train_statistics(
     best_loss = Inf; best_params = nothing; patience_counter = 0; actual_epochs = 0
 
     # Initial stratified indices (Generates initial stratified time indices for sampling during training.)
-    I = jittered_grid_burnin(cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps); burn=0.3, jitter=0.35)
+    k = min(cfgT.samples_per_epoch, cfgT.steps)
+    I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
 
     # Verbose output (Displays initial training configuration details if verbose mode is enabled.)
     if verbose
@@ -202,9 +336,14 @@ function train_statistics(
         # --- prepare stratified time indices for this epoch ---
         #k = min(cfgT.samples_per_epoch, cfgT.steps); @assert k > 0
         k = min(cfgT.samples_per_epoch, cfgT.steps)
+        # and inside the loop, keep:
+        """if epoch == 1 || (epoch % refresh == 1)
+            k = min(cfgT.samples_per_epoch, cfgT.steps)
+            I = jittered_grid_burnin(cfgT.rng, cfgT.steps, k; burn=0.3, jitter=0.35)
+        end"""
+
         if epoch == 1 || (epoch % refresh == 1)
-            #k = min(cfgT.samples_per_epoch, cfgT.steps)
-            I = jittered_grid_burnin(cfgT.steps, k; burn=0.3, jitter=0.35)
+            I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
         end
         # --- extract current params and epoch settings ---
         σ,ρ,β = pstate.σ[1], pstate.ρ[1], pstate.β[1]
@@ -212,15 +351,15 @@ function train_statistics(
         U_epoch = (cfgT.initial_conditions === nothing) ? reshape(T.(base_u0T),3,1) : T.(cfgT.initial_conditions)
         dt_epoch, steps_epoch = cfgT.dt, cfgT.steps
 
-        # ---- bandwidth annealing (smooth → sharp) ----
-        Δ = (centers[end]-centers[1]) / (length(centers)-1)   # grid spacing
-        h_start = T(3) * Δ                                    # very smooth at start
-        h_end   = T(0.7) * Δ                                  # sharp(er) at end
-        τ = T(800)                                            # decay time (epochs)
-        h_curr = h_end + (h_start - h_end) * exp(-T(epoch)/τ) # exponential schedule
-
-        # --- compute loss and gradients ---
         if is_pdf
+            # ---- bandwidth annealing (smooth → sharp) ----
+            Δ = (centers[end]-centers[1])/(length(centers)-1)
+            sched = cfgT.schedule
+            h_start = sched.h_start_mult * Δ
+            h_end   = sched.h_end_mult   * Δ
+            τ       = sched.tau
+            h_curr  = h_end + (h_start - h_end) * exp(-T(epoch)/τ)
+            # --- compute loss and gradients ---
             # Defines a closure loss_entry_pdf3d that calls _loss_pdf_core_3d with the current parameters and epoch settings.
             @noinline function loss_entry_pdf3d(σ, ρ, β, x_s, y_s, z_s, θ,
                                                 dt::S, steps::Int,
@@ -367,8 +506,8 @@ function train_statistics(
     if is_pdf
         Iall = collect(2:cfgT.steps+1)
         # at the end
-        h_final = T(0.7) * ((centers[end]-centers[1]) / (length(centers)-1))
-        Iall = collect(2:cfgT.steps+1)
+        Δ = (centers[end]-centers[1])/(length(centers)-1)
+        h_final = cfgT.schedule.h_end_mult * Δ
         final_stats = (; pdf3d = _compute_pdf3d_statistic(
             final_params, cfgT, base_u0T, cfgT.pdf.centers, h_final, Iall))
     else
@@ -550,7 +689,7 @@ range `2:steps+1`, one sample per segment, with jitter within each segment.
 
 Potentially useful alternative to `stratified_indices` to avoid clustering and more stable?
 """
-function jittered_grid_burnin(steps::Int, k::Int; burn=0.3, jitter=0.35)
+function jittered_grid_burnin(rng::AbstractRNG, steps::Int, k::Int; burn=0.3, jitter=0.35)
     start = 2 + round(Int, burn*steps)
     bins = range(start, steps+1; length=k+1)
     I = Vector{Int}(undef,k)
@@ -558,7 +697,7 @@ function jittered_grid_burnin(steps::Int, k::Int; burn=0.3, jitter=0.35)
         lo, hi = ceil(Int,bins[j]), floor(Int,bins[j+1]-eps())
         mid = (lo + hi) ÷ 2
         δ = max(0, round(Int, jitter*(hi-lo)/2))
-        I[j] = clamp(mid + rand((-δ):δ), lo, hi)
+        I[j] = clamp(mid + rand(rng, (-δ):δ), lo, hi)
     end
     sort!(I); I
 end
@@ -647,19 +786,21 @@ function _loss_subsample(σ, ρ, β, x_s, y_s, z_s, θ,
         idxp = 1
         nextI = I[idxp]
 
-        for _ in 1:cfg.steps
-            rk4_step!(u, p, cfg.dt, k1, k2, k3, k4, tmp) 
-            trow += 1
-            if trow == nextI
-                acc[1] += u[1]*invk
-                acc[2] += u[2]*invk
-                acc[3] += u[3]*invk
-                idxp += 1
-                if idxp > k
-                    # (optional) break
-                    # break
-                else
-                    nextI = I[idxp]
+        @maybe_checkpoint begin
+            for _ in 1:cfg.steps
+                rk4_step!(u, p, cfg.dt, k1, k2, k3, k4, tmp) 
+                trow += 1
+                if trow == nextI
+                    acc[1] += u[1]*invk
+                    acc[2] += u[2]*invk
+                    acc[3] += u[3]*invk
+                    idxp += 1
+                    if idxp > k
+                        # (optional) break
+                        # break
+                    else
+                        nextI = I[idxp]
+                    end
                 end
             end
         end
@@ -701,14 +842,16 @@ function _loss_subsample_core(σ, ρ, β, x_s, y_s, z_s, θ,
         sum_traj = zeros(S,3)
         sumsq_traj = zeros(S,3)
 
-        for _ in 1:steps
-            rk4_step!(u, p, dt, k1, k2, k3, k4, tmp)
-            trow += 1
-            if trow == nextI
-                sum_traj[1] += u[1]; sum_traj[2] += u[2]; sum_traj[3] += u[3]
-                sumsq_traj[1] += u[1]*u[1]; sumsq_traj[2] += u[2]*u[2]; sumsq_traj[3] += u[3]*u[3]
-                idxp += 1
-                idxp <= k && (nextI = I[idxp])
+        @maybe_checkpoint begin
+            for _ in 1:steps
+                rk4_step!(u, p, dt, k1, k2, k3, k4, tmp)
+                trow += 1
+                if trow == nextI
+                    sum_traj[1] += u[1]; sum_traj[2] += u[2]; sum_traj[3] += u[3]
+                    sumsq_traj[1] += u[1]*u[1]; sumsq_traj[2] += u[2]*u[2]; sumsq_traj[3] += u[3]*u[3]
+                    idxp += 1
+                    idxp <= k && (nextI = I[idxp])
+                end
             end
         end
 
@@ -812,14 +955,14 @@ function evaluate_statistics(params::L63Parameters;
         cfg.pdf.sinkhorn_iters
     )
 
-    cfgT = ClimateConfig{T}(
+    cfgT = ClimateConfig(T;
         dt = T(cfg.dt),
         steps = cfg.steps,
         initial_conditions = (cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
         samples_per_epoch = cfg.samples_per_epoch,
         rng = cfg.rng,
         loss_mode = cfg.loss_mode,
-        pdf = pdfT,                                 # <-- preserve user PDF config (promoted)
+        pdf = pdfT,   # schedule defaults to PdfSchedule(T)
     )
     base_u0T = T.(base_u0)
 
@@ -881,15 +1024,24 @@ function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::Ab
                             R::Int = 3) where {T}
     m = length(centers); @assert length(out) == m*m*m
     fill!(out, zero(T))
-    Δ = (centers[end]-centers[1])/(m-1)                  # uniform
+    Δ = (centers[end]-centers[1])/(m-1)                  # uniform grid
     inv2h2 = one(T)/(2*h*h)
     invΔ   = one(T)/Δ
+    hi_idx = T(m - 1)
 
     @inbounds for s in eachindex(xs)
-        # nearest bin indices
-        ix0 = clamp( Int(round((xs[s]-centers[1])*invΔ)) + 1, 1, m )
-        iy0 = clamp( Int(round((ys[s]-centers[1])*invΔ)) + 1, 1, m )
-        iz0 = clamp( Int(round((zs[s]-centers[1])*invΔ)) + 1, 1, m )
+        # clamp floating indices before converting to Int to avoid overflow
+        posx = (xs[s] - centers[1]) * invΔ
+        posx = isfinite(posx) ? clamp(posx, zero(T), hi_idx) : (posx > zero(T) ? hi_idx : zero(T))
+        ix0  = Int(round(posx)) + 1
+
+        posy = (ys[s] - centers[1]) * invΔ
+        posy = isfinite(posy) ? clamp(posy, zero(T), hi_idx) : (posy > zero(T) ? hi_idx : zero(T))
+        iy0  = Int(round(posy)) + 1
+
+        posz = (zs[s] - centers[1]) * invΔ
+        posz = isfinite(posz) ? clamp(posz, zero(T), hi_idx) : (posz > zero(T) ? hi_idx : zero(T))
+        iz0  = Int(round(posz)) + 1
 
         iL = max(1, ix0-R); iH = min(m, ix0+R)
         jL = max(1, iy0-R); jH = min(m, iy0+R)
@@ -912,7 +1064,6 @@ function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::Ab
     s = sum(out); s > eps(T) ? (out ./= s) : fill!(out, one(T)/length(out))
     return nothing
 end
-
 
 
 # "Normal" binned 3D PDF (histogram) — no kernel smoothing
@@ -1057,14 +1208,16 @@ function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,         # 7 trainable 
         # time row tracking
         trow = 1; idxp = 1; nextI = I[idxp]
         # integrate and sample
-        for _ in 1:steps
-            rk4_step!(u, p, dt, k1, k2, k3, k4, tmp)
-            trow += 1
-            if trow == nextI
-                xs[idx] = u[1]; ys[idx] = u[2]; zs[idx] = u[3]
-                idx += 1
-                idxp += 1
-                idxp <= k && (nextI = I[idxp])
+        @maybe_checkpoint begin
+            for _ in 1:steps
+                rk4_step!(u, p, dt, k1, k2, k3, k4, tmp)
+                trow += 1
+                if trow == nextI
+                    xs[idx] = u[1]; ys[idx] = u[2]; zs[idx] = u[3]
+                    idx += 1
+                    idxp += 1
+                    idxp <= k && (nextI = I[idxp])
+                end
             end
         end
     end
@@ -1074,7 +1227,8 @@ function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,         # 7 trainable 
     p3d = Vector{S}(undef, n)
     # Differentiable surrogate for training
     # soft_hist_3d(xs, ys, zs, centers, h, p3d)  # old
-    soft_hist_3d_local(xs, ys, zs, centers, h, p3d; R=3)  # new (≈100–1000× faster)
+    R = max(1, ceil(Int, 3h / ((centers[end]-centers[1])/(length(centers)-1))))
+    soft_hist_3d_local(xs, ys, zs, centers, h, p3d; R=R)  # new (≈100–1000× faster)
 
     # Computes the loss between the predicted and target PDF using the selected mode
     if loss_mode === :cross_entropy
