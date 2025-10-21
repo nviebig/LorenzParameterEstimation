@@ -110,6 +110,7 @@ Base.@kwdef struct PdfConfig{T}
     sinkhorn_ε::T
     sinkhorn_iters::Int
 end
+
 # convenience “default” constructor for a given T, controlls the smooth to sharp transition
 struct PdfSchedule{T}
     h_start_mult::T
@@ -269,7 +270,6 @@ function train_statistics(
     # Setup targets (Prepares target statistics based on whether PDF training is selected or not.)
     if is_pdf
         centers  = cfgT.pdf.centers
-        hT       = cfgT.pdf.bandwidth
         sinkεT   = cfgT.pdf.sinkhorn_ε
         pdf_mode = cfgT.pdf.loss_mode
 
@@ -345,6 +345,7 @@ function train_statistics(
         if epoch == 1 || (epoch % refresh == 1)
             I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
         end
+        
         # --- extract current params and epoch settings ---
         σ,ρ,β = pstate.σ[1], pstate.ρ[1], pstate.β[1]
         x_s,y_s,z_s,θ = pstate.x_s[1], pstate.y_s[1], pstate.z_s[1], pstate.θ[1]
