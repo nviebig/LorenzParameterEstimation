@@ -96,6 +96,41 @@ end
 import ..LorenzParameterEstimation
 using  ..LorenzParameterEstimation: L63Parameters, integrate
 
+const _CUDA_MODULE = Base.RefValue{Union{Nothing,Module}}(nothing)
+const _VALID_DEVICES = (:cpu, :gpu)
+
+function _normalize_device(device::Symbol)
+    if !(device in _VALID_DEVICES)
+        valid = join(_VALID_DEVICES, ", ")
+        error("Unsupported device $(device). Expected one of $(valid).")
+    end
+    return device
+end
+
+function _cuda_module()
+    mod = _CUDA_MODULE[]
+    if mod === nothing
+        try
+            mod = Base.require(:CUDA)
+        catch err
+            error("CUDA.jl is required for GPU execution but could not be loaded: $(err)")
+        end
+        _CUDA_MODULE[] = mod
+    end
+    return mod
+end
+
+function _to_device(arr::AbstractArray, device::Symbol)
+    if device === :gpu
+        CUDA = _cuda_module()
+        return arr isa CUDA.CuArray ? arr : CUDA.CuArray(arr)
+    else
+        return arr isa Array ? arr : Array(arr)
+    end
+end
+
+_to_device(arr::Nothing, device::Symbol) = arr
+
 
 export train_climate, evaluate_statistics, ClimateConfig, train_statistics,soft_hist_3d, make_pdf_config, hard_hist_3d, soft_hist_3d_local, PdfSchedule
 # ================================
@@ -152,6 +187,24 @@ struct ClimateConfig{T}
     loss_mode::Symbol
     pdf::PdfConfig{T}
     schedule::PdfSchedule{T}
+    device::Symbol
+end
+
+_convert_initial_conditions(::Nothing, ::Type{T}, device::Symbol) where {T} = nothing
+
+function _convert_initial_conditions(initial_conditions::AbstractMatrix, ::Type{T}, device::Symbol) where {T}
+    if device === :gpu
+        CUDA = _cuda_module()
+        data_gpu = initial_conditions isa CUDA.CuArray ? initial_conditions : CUDA.CuArray(initial_conditions)
+        return T.(data_gpu)
+    else
+        return T.(initial_conditions)
+    end
+end
+
+function _convert_state_vector(base_u0::AbstractVector, ::Type{T}, device::Symbol) where {T}
+    data = T.(base_u0)
+    return device === :gpu ? _to_device(data, device) : data
 end
 
 # Default constructor for a given element type T
@@ -164,15 +217,19 @@ function ClimateConfig(::Type{T};
     loss_mode::Symbol = :sse,
     pdf::PdfConfig{T} = make_pdf_config(T),
     schedule::PdfSchedule{T} = PdfSchedule(T),
+    device::Symbol = :cpu,
 ) where {T}
-    ClimateConfig{T}(dt, steps, initial_conditions, samples_per_epoch, rng, loss_mode, pdf, schedule)
+    device_norm = _normalize_device(device)
+    icT = _convert_initial_conditions(initial_conditions, T, device_norm)
+    ClimateConfig{T}(dt, steps, icT, samples_per_epoch, rng, loss_mode, pdf, schedule, device_norm)
 end
 
 # Convenience constructor that infers T from dt / ICs / pdf
 function ClimateConfig(; dt::Real=0.01, steps::Int=4000,
     initial_conditions=nothing, samples_per_epoch::Int=256,
     rng::Random.AbstractRNG=Random.default_rng(), loss_mode::Symbol=:sse,
-    pdf=make_pdf_config(Float64), schedule=PdfSchedule(Float64))
+    pdf=make_pdf_config(Float64), schedule=PdfSchedule(Float64),
+    device::Symbol=:cpu)
 
     T = promote_type(typeof(dt),
         initial_conditions === nothing ? Float64 : eltype(initial_conditions),
@@ -181,9 +238,10 @@ function ClimateConfig(; dt::Real=0.01, steps::Int=4000,
     pdfT = PdfConfig{T}(T.(pdf.centers), T(pdf.bandwidth), pdf.loss_mode,
                         T(pdf.sinkhorn_ε), pdf.sinkhorn_iters)
     schedT = PdfSchedule{T}(T(schedule.h_start_mult), T(schedule.h_end_mult), T(schedule.tau))
-    icT = initial_conditions === nothing ? nothing : T.(initial_conditions)
+    device_norm = _normalize_device(device)
+    icT = _convert_initial_conditions(initial_conditions, T, device_norm)
 
-    ClimateConfig{T}(T(dt), steps, icT, samples_per_epoch, rng, loss_mode, pdfT, schedT)
+    ClimateConfig{T}(T(dt), steps, icT, samples_per_epoch, rng, loss_mode, pdfT, schedT, device_norm)
 end
 
 
@@ -253,16 +311,21 @@ function train_statistics(
     cfgT = ClimateConfig(T;
         dt = T(cfg.dt),
         steps = cfg.steps,
-        initial_conditions = (cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
+        initial_conditions = cfg.initial_conditions,
         samples_per_epoch = cfg.samples_per_epoch,
         rng = cfg.rng,
         loss_mode = cfg.loss_mode,
         pdf = pdfT,
         schedule = scheduleT,
+        device = cfg.device,
     )
 
-    #  Convert base_u0 to T
-    base_u0T = T.(base_u0)
+    device = cfgT.device
+
+    #  Convert base_u0 to T on the selected device
+    base_u0T = _convert_state_vector(base_u0, T, device)
+    @assert length(base_u0T) == 3 "base_u0 must have length 3."
+    base_u0_matrix = reshape(base_u0T, 3, 1)
 
     # PDF mode detection (Checks if any statistic in stats is :pdf3d to determine if PDF training is needed.)
     is_pdf = any(s -> s == :pdf3d, stats_tuple)
@@ -349,7 +412,7 @@ function train_statistics(
         # --- extract current params and epoch settings ---
         σ,ρ,β = pstate.σ[1], pstate.ρ[1], pstate.β[1]
         x_s,y_s,z_s,θ = pstate.x_s[1], pstate.y_s[1], pstate.z_s[1], pstate.θ[1]
-        U_epoch = (cfgT.initial_conditions === nothing) ? reshape(T.(base_u0T),3,1) : T.(cfgT.initial_conditions)
+        U_epoch = cfgT.initial_conditions === nothing ? base_u0_matrix : cfgT.initial_conditions
         dt_epoch, steps_epoch = cfgT.dt, cfgT.steps
 
         if is_pdf
@@ -367,16 +430,17 @@ function train_statistics(
                                                 U::AbstractMatrix{S}, I::AbstractVector{Int},
                                                 centers::AbstractVector{S}, h::S,
                                                 p3d_t::AbstractVector{S},
-                                                mode::Symbol, sinkε::S, sinkiters::Int)::S where {S<:Real}
+                                                mode::Symbol, sinkε::S, sinkiters::Int,
+                                                device_sym::Symbol)::S where {S<:Real}
                 _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,
-                                  dt, steps, U, I, centers, h, p3d_t, mode, sinkε, sinkiters)
+                                  dt, steps, U, I, centers, h, p3d_t, mode, sinkε, sinkiters, device_sym)
             end
             # Computes the loss for the current epoch using the loss_entry_pdf3d function.
             L = loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
                      dt_epoch, steps_epoch, U_epoch, I,
                      centers, h_curr,                    # <— here
                      p3d_tgt,
-                     pdf_mode, sinkεT, cfgT.pdf.sinkhorn_iters)
+                     pdf_mode, sinkεT, cfgT.pdf.sinkhorn_iters, device)
 
             # Stores the computed loss for the current epoch.
             losses[epoch] = L
@@ -390,7 +454,7 @@ function train_statistics(
                 Enzyme.Const(U_epoch), Enzyme.Const(I),
                 Enzyme.Const(centers), Enzyme.Const(h_curr),  # <- was hT
                 Enzyme.Const(p3d_tgt),
-                Enzyme.Const(pdf_mode), Enzyme.Const(sinkεT), Enzyme.Const(cfgT.pdf.sinkhorn_iters),
+                Enzyme.Const(pdf_mode), Enzyme.Const(sinkεT), Enzyme.Const(cfgT.pdf.sinkhorn_iters), Enzyme.Const(device),
             )
             # Flattens the gradient tuple returned by Enzyme into a plain tuple for easier manipulation.
             g = _flatten_grads(gtuple)
@@ -422,13 +486,14 @@ function train_statistics(
                                           target::AbstractVector{S},
                                           I::AbstractVector{Int},
                                           stats_nt::NTuple{M,Symbol},
-                                          loss_mode::Symbol)::S where {S<:Real, M}
+                                          loss_mode::Symbol,
+                                          device_sym::Symbol)::S where {S<:Real, M}
                 _loss_subsample_core(σ, ρ, β, x_s, y_s, z_s, θ,
-                                    dt, steps, U, target, I, stats_nt, loss_mode)
+                                    dt, steps, U, target, I, stats_nt, loss_mode, device_sym)
             end
             loss_mode_sym = cfgT.loss_mode
             L = loss_entry(σ, ρ, β, x_s, y_s, z_s, θ,
-                        dt_epoch, steps_epoch, U_epoch, target_vec, I, stats_tuple, loss_mode_sym)
+                        dt_epoch, steps_epoch, U_epoch, target_vec, I, stats_tuple, loss_mode_sym, device)
             losses[epoch] = L
             gtuple = Enzyme.autodiff(
                 Enzyme.set_runtime_activity(Enzyme.Reverse),
@@ -437,7 +502,7 @@ function train_statistics(
                 Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
                 Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
                 Enzyme.Const(U_epoch), Enzyme.Const(target_vec), Enzyme.Const(I),
-                Enzyme.Const(stats_tuple), Enzyme.Const(loss_mode_sym),
+                Enzyme.Const(stats_tuple), Enzyme.Const(loss_mode_sym), Enzyme.Const(device),
             )
             g = _flatten_grads(gtuple)
             gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
@@ -738,25 +803,38 @@ function _stats_over_batch_subsample(params::L63Parameters{T},
                                      stats::NTuple{N,Symbol},
                                      I::AbstractVector{Int}) where {T,N}
 
-    U = cfg.initial_conditions === nothing ? reshape(T.(base_u0), 3, 1) : T.(cfg.initial_conditions)
+    device = cfg.device
+    U = cfg.initial_conditions === nothing ?
+        reshape(_convert_state_vector(base_u0, T, device), 3, 1) :
+        cfg.initial_conditions
     _assert_ics(U)
 
-    tspan = (zero(T), T(cfg.steps) * cfg.dt)
-    acc = Dict{Symbol,Any}()
+    samples = _simulate_samples(params, cfg.dt, cfg.steps, U, I)
+    B = size(U, 2)
+    k = length(I)
+    invk = one(T) / T(k)
 
-    @inbounds for b in 1:size(U, 2)
-        u0 = @view U[:, b]
-        sol = integrate(params, u0, tspan, cfg.dt)  # sol.u is (steps+1) × 3
-        for s in stats
-            _accumulate_stat!(acc, s, sol.u, I)
-        end
+    results = Dict{Symbol,Vector{T}}()
+    mean_traj = nothing
+
+    if any(s -> s === :mean || s === :std, stats)
+        mean_traj = sum(samples; dims=3) .* invk
     end
 
-    outD = Dict{Symbol,Any}()
-    for s in stats
-        _finalize_stat!(outD, acc, s, size(U,2))
+    if any(s -> s === :mean, stats)
+        mean_batch = sum(mean_traj; dims=2) .* (one(T) / T(B))
+        results[:mean] = device === :gpu ? vec(_to_device(mean_batch, :cpu)) : vec(mean_batch)
     end
-    return NamedTuple{stats}(map(k -> outD[k], stats))
+
+    if any(s -> s === :std, stats)
+        sumsq = sum(samples .* samples; dims=3) .* invk
+        var_traj = max.(sumsq .- mean_traj .* mean_traj, zero(T))
+        std_traj = sqrt.(var_traj)
+        std_batch = sum(std_traj; dims=2) .* (one(T) / T(B))
+        results[:std] = device === :gpu ? vec(_to_device(std_batch, :cpu)) : vec(std_batch)
+    end
+
+    return NamedTuple{stats}(map(k -> results[k], stats))
 end
 
 
@@ -816,72 +894,90 @@ end
 
 
 # === union-free loss core (no cfg capture, no Union fields) ===
+function _simulate_samples(p::L63Parameters{S},
+                           dt::S,
+                           steps::Int,
+                           U0::AbstractMatrix{S},
+                           I::AbstractVector{Int}) where {S<:Real}
+
+    @assert size(U0, 1) == 3 "Initial conditions must be 3×B."
+    k = length(I)
+    @assert k > 0 "Sampling indices vector I must be non-empty."
+
+    state = copy(U0)
+    k1 = similar(state); k2 = similar(state); k3 = similar(state); k4 = similar(state)
+    tmp = similar(state)
+    samples = similar(state, 3, size(U0, 2), k)
+
+    trow = 1
+    idxp = 1
+    nextI = I[idxp]
+
+    @maybe_checkpoint begin
+        for _ in 1:steps
+            rk4_step_batch!(state, p, dt, k1, k2, k3, k4, tmp)
+            trow += 1
+            if trow == nextI
+                copyto!(view(samples, :, :, idxp), state)
+                idxp += 1
+                if idxp > k
+                    break
+                else
+                    nextI = I[idxp]
+                end
+            end
+        end
+    end
+
+    idxp > k || error("Sampling indices must not exceed total number of integration steps.")
+    return samples
+end
+
 function _loss_subsample_core(σ, ρ, β, x_s, y_s, z_s, θ,
                               dt::S, steps::Int,
                               U::AbstractMatrix{S},           # 3×B
                               target::AbstractVector{S},      # flattened target (3 * length(stats))
                               I::AbstractVector{Int},
                               stats::NTuple{M,Symbol},
-                              loss_mode::Symbol)::S where {S<:Real, M}
+                              loss_mode::Symbol,
+                              device::Symbol)::S where {S<:Real, M}
 
     p = L63Parameters(S(σ),S(ρ),S(β),S(x_s),S(y_s),S(z_s),S(θ))
     B = size(U,2)
     k = length(I); invk = one(S)/S(k)
 
-    acc_mean = zeros(S,3)
-    acc_std  = zeros(S,3)   # accumulate per-trajectory stds only if requested
     compute_mean = any(s -> s === :mean, stats)
     compute_std  = any(s -> s === :std, stats)
 
-    @inbounds for b in 1:B
-        u   = copy(@view U[:,b])
-        k1  = similar(u); k2 = similar(u); k3 = similar(u); k4 = similar(u)
-        tmp = similar(u)
-        trow = 1; idxp = 1; nextI = I[idxp]
+    samples = _simulate_samples(p, dt, steps, U, I)
 
-        # per-trajectory accumulators for mean/std
-        sum_traj = zeros(S,3)
-        sumsq_traj = zeros(S,3)
+    mean_batch = nothing
+    std_batch = nothing
 
-        @maybe_checkpoint begin
-            for _ in 1:steps
-                rk4_step!(u, p, dt, k1, k2, k3, k4, tmp)
-                trow += 1
-                if trow == nextI
-                    sum_traj[1] += u[1]; sum_traj[2] += u[2]; sum_traj[3] += u[3]
-                    sumsq_traj[1] += u[1]*u[1]; sumsq_traj[2] += u[2]*u[2]; sumsq_traj[3] += u[3]*u[3]
-                    idxp += 1
-                    idxp <= k && (nextI = I[idxp])
-                end
-            end
-        end
-
+    if compute_mean || compute_std
+        mean_traj = sum(samples; dims=3) .* invk
         if compute_mean
-            mean_traj = sum_traj .* (invk)
-            acc_mean .+= mean_traj
+            sum_means = sum(mean_traj; dims=2) .* (one(S)/S(B))
+            mean_batch = device === :gpu ? vec(_to_device(sum_means, :cpu)) : vec(sum_means)
         end
-
         if compute_std
-            # variance = E[x^2] - (E[x])^2
-            mean_traj = sum_traj .* (invk)
-            ex2 = sumsq_traj .* (invk)
-            var_traj = ex2 .- (mean_traj .* mean_traj)
-            var_traj .= clamp.(var_traj, zero(S), Inf)   # guard numerical negatives
+            sumsq = sum(samples .* samples; dims=3) .* invk
+            var_traj = max.(sumsq .- mean_traj .* mean_traj, zero(S))
             std_traj = sqrt.(var_traj)
-            acc_std .+= std_traj
+            sum_stds = sum(std_traj; dims=2) .* (one(S)/S(B))
+            std_batch = device === :gpu ? vec(_to_device(sum_stds, :cpu)) : vec(sum_stds)
         end
     end
-
-    mean_batch = acc_mean .* (one(S)/S(B))
-    std_batch  = acc_std  .* (one(S)/S(B))
 
     # build flattened prediction vector in same order as stats
     pred = Vector{S}(undef, 3 * length(stats))
     idx = 1
     for s in stats
         if s === :mean
+            mean_batch === nothing && error("mean statistic requested but not computed.")
             pred[idx:idx+2] = mean_batch
         elseif s === :std
+            std_batch === nothing && error("std statistic requested but not computed.")
             pred[idx:idx+2] = std_batch
         else
             error("Unsupported statistic $(s) in loss core. Add it to _loss_subsample_core.")
@@ -927,6 +1023,38 @@ end
     return nothing
 end
 
+@inline function lorenz_rhs_batch!(dU::AbstractMatrix{T}, U::AbstractMatrix{T}, p::L63Parameters{T}) where {T}
+    @assert size(U, 1) == 3 "State matrix must be 3×B."
+    @assert size(dU) == size(U) "Derivative buffer must match state matrix size."
+    @views begin
+        x = U[1, :]
+        y = U[2, :]
+        z = U[3, :]
+        dx = dU[1, :]
+        dy = dU[2, :]
+        dz = dU[3, :]
+        @. dx = p.σ * ((y - p.y_s) - (x - p.x_s))
+        @. dy = (x - p.x_s) * (p.ρ - (z - p.z_s)) - (y - p.y_s)
+        @. dz = (x - p.x_s) * (y - p.y_s) - p.β * (z - p.z_s)
+    end
+    return nothing
+end
+
+@inline function rk4_step_batch!(U::AbstractMatrix{T}, p::L63Parameters{T}, dt::T,
+                                 k1::AbstractMatrix{T}, k2::AbstractMatrix{T},
+                                 k3::AbstractMatrix{T}, k4::AbstractMatrix{T},
+                                 tmp::AbstractMatrix{T}) where {T}
+    lorenz_rhs_batch!(k1, U, p)
+    @. tmp = U + (dt/2) * k1
+    lorenz_rhs_batch!(k2, tmp, p)
+    @. tmp = U + (dt/2) * k2
+    lorenz_rhs_batch!(k3, tmp, p)
+    @. tmp = U + dt * k3
+    lorenz_rhs_batch!(k4, tmp, p)
+    @. U = U + (dt/6) * (k1 + 2k2 + 2k3 + k4)
+    return nothing
+end
+
 
 # ================================
 # Public API
@@ -956,16 +1084,20 @@ function evaluate_statistics(params::L63Parameters;
         cfg.pdf.sinkhorn_iters
     )
 
+    schedT = PdfSchedule{T}(T(cfg.schedule.h_start_mult), T(cfg.schedule.h_end_mult), T(cfg.schedule.tau))
+
     cfgT = ClimateConfig(T;
         dt = T(cfg.dt),
         steps = cfg.steps,
-        initial_conditions = (cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
+        initial_conditions = cfg.initial_conditions,
         samples_per_epoch = cfg.samples_per_epoch,
         rng = cfg.rng,
         loss_mode = cfg.loss_mode,
-        pdf = pdfT,   # schedule defaults to PdfSchedule(T)
+        pdf = pdfT,
+        schedule = schedT,
+        device = cfg.device,
     )
-    base_u0T = T.(base_u0)
+    base_u0T = _convert_state_vector(base_u0, T, cfgT.device)
 
     if full_trajectory
         # use all rows 2:steps+1 (skip t=0 row)
@@ -1185,53 +1317,24 @@ function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,         # 7 trainable 
                            h::S,                              # Gaussian bandwidth
                            p3d_tgt::AbstractVector{S},        # target pdf (length m^3), normalized
                            loss_mode::Symbol,                 # :kl, :cross_entropy, :wasserstein
-                           sink_ε::S, sink_iters::Int)::S where {S<:Real}
-    
-    # integrate each IC once for 'steps', sample at I, build 3D pdf, compute loss vs target pdf
+                           sink_ε::S, sink_iters::Int,
+                           device::Symbol)::S where {S<:Real}
+
     p = L63Parameters(S(σ),S(ρ),S(β),S(x_s),S(y_s),S(z_s),S(θ))
-    B = size(U,2)       # number of initial conditions
-    k = length(I)       # number of sampled time indices
-    nx = k*B            # total sampled points
-    xs = Vector{S}(undef, nx); ys = similar(xs); zs = similar(xs)
-    idx = 1
-    
-    # for each inital condition, integrate and sample at I
-    @inbounds for b in 1:B
-        # current state
-        u   = copy(@view U[:,b])
-        # intermediate steps
-        k1  = similar(u); 
-        k2 = similar(u); 
-        k3 = similar(u); 
-        k4 = similar(u)
-        # temporary storage
-        tmp = similar(u)
-        # time row tracking
-        trow = 1; idxp = 1; nextI = I[idxp]
-        # integrate and sample
-        @maybe_checkpoint begin
-            for _ in 1:steps
-                rk4_step!(u, p, dt, k1, k2, k3, k4, tmp)
-                trow += 1
-                if trow == nextI
-                    xs[idx] = u[1]; ys[idx] = u[2]; zs[idx] = u[3]
-                    idx += 1
-                    idxp += 1
-                    idxp <= k && (nextI = I[idxp])
-                end
-            end
-        end
-    end
-    # Compute the 3D PDF
+    samples = _simulate_samples(p, dt, steps, U, I)
+    samples_flat = reshape(samples, 3, :)
+    samples_cpu = device === :gpu ? _to_device(samples_flat, :cpu) : samples_flat
+
+    xs = Vector{S}(samples_cpu[1, :])
+    ys = Vector{S}(samples_cpu[2, :])
+    zs = Vector{S}(samples_cpu[3, :])
+
     m = length(centers)
     n = m*m*m
     p3d = Vector{S}(undef, n)
-    # Differentiable surrogate for training
-    # soft_hist_3d(xs, ys, zs, centers, h, p3d)  # old
     R = max(1, ceil(Int, 3h / ((centers[end]-centers[1])/(length(centers)-1))))
-    soft_hist_3d_local(xs, ys, zs, centers, h, p3d; R=R)  # new (≈100–1000× faster)
+    soft_hist_3d_local(xs, ys, zs, centers, h, p3d; R=R)
 
-    # Computes the loss between the predicted and target PDF using the selected mode
     if loss_mode === :cross_entropy
         return _cross_entropy_vec(p3d_tgt, p3d)
     elseif loss_mode === :kl
@@ -1251,41 +1354,21 @@ function _compute_pdf3d_statistic(params::L63Parameters{S},
                                   I::AbstractVector{Int}) where {S<:Real}
 
     @assert length(I) > 0 "At least one time index must be provided"
-    # initial conditions
-    U = cfg.initial_conditions === nothing ? reshape(S.(base_u0), 3, 1) : S.(cfg.initial_conditions)
+    device = cfg.device
+    U = cfg.initial_conditions === nothing ?
+        reshape(_convert_state_vector(base_u0, S, device), 3, 1) :
+        cfg.initial_conditions
     _assert_ics(U)
-    # parameters
+
     p = L63Parameters(S(params.σ), S(params.ρ), S(params.β),
                       S(params.x_s), S(params.y_s), S(params.z_s), S(params.θ))
-    # prepare storage
-    B = size(U,2)
-    k = length(I)
-    @assert k > 0 "PDF statistic requires at least one sampled time index"
+    samples = _simulate_samples(p, cfg.dt, cfg.steps, U, I)
+    samples_flat = reshape(samples, 3, :)
+    samples_cpu = device === :gpu ? _to_device(samples_flat, :cpu) : samples_flat
 
-    # extract sampled points
-    nx = k * B
-    xs = Vector{S}(undef, nx)
-    ys = similar(xs)
-    zs = similar(xs)
-    idx = 1
-
-    
-    @inbounds for b in 1:B
-        u   = copy(@view U[:,b])
-        k1  = similar(u); k2 = similar(u); k3 = similar(u); k4 = similar(u)
-        tmp = similar(u)
-        trow = 1; idxp = 1; nextI = I[idxp]
-        for _ in 1:cfg.steps
-            rk4_step!(u, p, cfg.dt, k1, k2, k3, k4, tmp)
-            trow += 1
-            if trow == nextI
-                xs[idx] = u[1]; ys[idx] = u[2]; zs[idx] = u[3]
-                idx += 1
-                idxp += 1
-                idxp <= k && (nextI = I[idxp])
-            end
-        end
-    end
+    xs = Vector{S}(samples_cpu[1, :])
+    ys = Vector{S}(samples_cpu[2, :])
+    zs = Vector{S}(samples_cpu[3, :])
 
     m = length(centers)
     p3d = Vector{S}(undef, m*m*m)
