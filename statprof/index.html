@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv='Content-Type' content='text/html; charset=utf-8'></meta>
+    <link rel='stylesheet' type='text/css' href='statprofiler.css'></link>
+    <title>StatProfilerHTML - main report</title>
+  </head>
+  <body>
+    <div class='report-header'>
+      <div class='backlink'>
+        <a href='index.html'>Report index</a>
+      </div>
+      <div class='report-title'>
+        StatProfilerHTML.jl report
+      </div>
+      <div class='generated-on'>
+        Generated on Tue, 21 Oct 2025 15:48:06
+      </div>
+    </div>
+    <object data='flamegraph.svg' type='image/svg&#43;xml' style='display: block' id='flamegraph' width='90&#37;'></object>
+    <table>
+      <caption>Methods sorted by exclusive sample count</caption>
+      <thead>
+        <tr>
+          <th>Exclusive</th>
+          <th>Inclusive</th>
+          <th>Method</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>18739 &#40;14 &#37;&#41;</td>
+          <td>31569 &#40;24 &#37;&#41;</td>
+          <td>
+            <a href='floatfuncs.jl-30e1261128cdd04fecbcbb09d23b7ac405d117ec.html#L304'>fma_emulated</a>
+          </td>
+        </tr>
+        <tr>
+          <td>11956 &#40;9 &#37;&#41;</td>
+          <td>11963 &#40;9 &#37;&#41;</td>
+          <td>
+            <a href='simdloop.jl-03d77f9812e5e6a8173deaf4874a026d182f0cf5.html#L75'>macro expansion</a>
+          </td>
+        </tr>
+        <tr>
+          <td>9615 &#40;7 &#37;&#41;</td>
+          <td>9615 &#40;7 &#37;&#41;</td>
+          <td>
+            <a href='float.jl-040b92fced9a88f00e76d72b247b172a3d17d3df.html#L491'>&#43;</a>
+          </td>
+        </tr>
+        <tr>
+          <td>9506 &#40;7 &#37;&#41;</td>
+          <td>9520 &#40;7 &#37;&#41;</td>
+          <td>
+            <a href='array.jl-0de2afcd065f494ab92c5b78805623d34ddcb49b.html#L987'>setindex&#33;</a>
+          </td>
+        </tr>
+        <tr>
+          <td>8320 &#40;6 &#37;&#41;</td>
+          <td>8320 &#40;6 &#37;&#41;</td>
+          <td>
+            <a href='essentials.jl-7e6251a38769b6ec1872bec2af3c8446e0571c4c.html#L917'>getindex</a>
+          </td>
+        </tr>
+        <tr>
+          <td>5332 &#40;4 &#37;&#41;</td>
+          <td>5332 &#40;4 &#37;&#41;</td>
+          <td>
+            <a href='boot.jl-d0573c49a43943809925128d31fbe5c3d7aedc3b.html#L516'>GenericMemory</a>
+          </td>
+        </tr>
+        <tr>
+          <td>4982 &#40;4 &#37;&#41;</td>
+          <td>4982 &#40;4 &#37;&#41;</td>
+          <td>
+            <a href='float.jl-040b92fced9a88f00e76d72b247b172a3d17d3df.html#L617'>&#33;&#61;</a>
+          </td>
+        </tr>
+        <tr>
+          <td>3772 &#40;3 &#37;&#41;</td>
+          <td>43015 &#40;32 &#37;&#41;</td>
+          <td>
+            <a href='log.jl-efe2c24213796f9f9ac1185ea56494ad93be5e2f.html#L261'>log</a>
+          </td>
+        </tr>
+        <tr>
+          <td>3552 &#40;3 &#37;&#41;</td>
+          <td>3552 &#40;3 &#37;&#41;</td>
+          <td>
+            <a href='float.jl-040b92fced9a88f00e76d72b247b172a3d17d3df.html#L493'>*</a>
+          </td>
+        </tr>
+        <tr>
+          <td>3121 &#40;2 &#37;&#41;</td>
+          <td>46635 &#40;35 &#37;&#41;</td>
+          <td>
+            <a href='training_climate.jl-1ebf5e156db6f2e3698b128cfb09787428b9bfac.html#L1094'>_kl_divergence_vec</a>
+          </td>
+        </tr>
+        <tr>
+          <td>3077 &#40;2 &#37;&#41;</td>
+          <td>3077 &#40;2 &#37;&#41;</td>
+          <td>
+            <a href='essentials.jl-7e6251a38769b6ec1872bec2af3c8446e0571c4c.html#L796'>ifelse</a>
+          </td>
+        </tr>
+        <tr>
+          <td>3048 &#40;2 &#37;&#41;</td>
+          <td>3048 &#40;2 &#37;&#41;</td>
+          <td>
+            <a href='essentials.jl-7e6251a38769b6ec1872bec2af3c8446e0571c4c.html#L0'>_loss_pdf_core_3d</a>
+          </td>
+        </tr>
+        <tr>
+          <td>2989 &#40;2 &#37;&#41;</td>
+          <td>6455 &#40;5 &#37;&#41;</td>
+          <td>
+            <a href='training_climate.jl-1ebf5e156db6f2e3698b128cfb09787428b9bfac.html#L1216'>_compute_pdf3d_statistic</a>
+          </td>
+        </tr>
+        <tr>
+          <td>2448 &#40;2 &#37;&#41;</td>
+          <td>2448 &#40;2 &#37;&#41;</td>
+          <td>
+            <a href='int.jl-dfa40303254ca146f6b3fcb869bef6bc5985216f.html#L347'>&amp;</a>
+          </td>
+        </tr>
+        <tr>
+          <td>2209 &#40;2 &#37;&#41;</td>
+          <td>4065 &#40;3 &#37;&#41;</td>
+          <td>
+            <a href='exp.jl-957aa4fe25b6b0dd981f87aa527898701917bd81.html#L330'>exp_fast</a>
+          </td>
+        </tr>
+        <tr>
+          <td>2034 &#40;2 &#37;&#41;</td>
+          <td>5453 &#40;4 &#37;&#41;</td>
+          <td>
+            <a href='fastmath.jl-d758c48fd4b6ab4029ff51d3b40a4aade2626527.html#L276'>exp_fast</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1772 &#40;1 &#37;&#41;</td>
+          <td>1772 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='promotion.jl-d5fd27e960346c04a6cd75ed70cccc27a355ad8b.html#L639'>&#61;&#61;</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1714 &#40;1 &#37;&#41;</td>
+          <td>6993 &#40;5 &#37;&#41;</td>
+          <td>
+            <a href='driver.jl-848cb1e63aab539247b3bb0704b39b7d7886f59b.html#L55'>#compile#149</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1627 &#40;1 &#37;&#41;</td>
+          <td>1627 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='float.jl-040b92fced9a88f00e76d72b247b172a3d17d3df.html#L492'>-</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1507 &#40;1 &#37;&#41;</td>
+          <td>1507 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='training_climate.jl-1ebf5e156db6f2e3698b128cfb09787428b9bfac.html#L997'>#soft_hist_3d_local#20</a>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      <a href='methods.html'>All methods</a>
+    </p>
+
+    <table>
+      <caption>Files sorted by exclusive sample count</caption>
+      <thead>
+        <tr>
+          <th>Exclusive</th>
+          <th>Report</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>23404 &#40;18 &#37;&#41;</td>
+          <td>
+            <a href='float.jl-040b92fced9a88f00e76d72b247b172a3d17d3df.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/float.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>20366 &#40;15 &#37;&#41;</td>
+          <td>
+            <a href='floatfuncs.jl-30e1261128cdd04fecbcbb09d23b7ac405d117ec.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/floatfuncs.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>17078 &#40;13 &#37;&#41;</td>
+          <td>
+            <a href='essentials.jl-7e6251a38769b6ec1872bec2af3c8446e0571c4c.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/essentials.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>13305 &#40;10 &#37;&#41;</td>
+          <td>
+            <a href='simdloop.jl-03d77f9812e5e6a8173deaf4874a026d182f0cf5.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/simdloop.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>11001 &#40;8 &#37;&#41;</td>
+          <td>
+            <a href='training_climate.jl-1ebf5e156db6f2e3698b128cfb09787428b9bfac.html'>src/training_climate.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>10704 &#40;8 &#37;&#41;</td>
+          <td>
+            <a href='array.jl-0de2afcd065f494ab92c5b78805623d34ddcb49b.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/array.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>6218 &#40;5 &#37;&#41;</td>
+          <td>
+            <a href='boot.jl-d0573c49a43943809925128d31fbe5c3d7aedc3b.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/boot.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>4765 &#40;4 &#37;&#41;</td>
+          <td>
+            <a href='log.jl-efe2c24213796f9f9ac1185ea56494ad93be5e2f.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/special/log.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>4377 &#40;3 &#37;&#41;</td>
+          <td>
+            <a href='int.jl-dfa40303254ca146f6b3fcb869bef6bc5985216f.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/int.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>3004 &#40;2 &#37;&#41;</td>
+          <td>
+            <a href='fastmath.jl-d758c48fd4b6ab4029ff51d3b40a4aade2626527.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/fastmath.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>2402 &#40;2 &#37;&#41;</td>
+          <td>
+            <a href='exp.jl-957aa4fe25b6b0dd981f87aa527898701917bd81.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/special/exp.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1777 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='promotion.jl-d5fd27e960346c04a6cd75ed70cccc27a355ad8b.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/promotion.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1754 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='compiler.jl-bf16fb6838edbb5d68cf83565006d0ab8c24b512.html'>../../.julia/packages/Enzyme/X4pFp/src/compiler.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1717 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='driver.jl-848cb1e63aab539247b3bb0704b39b7d7886f59b.html'>../../.julia/packages/GPUCompiler/Gp8bZ/src/driver.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1424 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='abstractinterpretation.jl-c9a000448bf80dd0f1da4362fd707412c18477d8.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/compiler/abstractinterpretation.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1269 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='loop.jl-18710467b0971ba8d579539ddd1a4fb484f22a6c.html'>../../.julia/packages/Gtk4/D4pxM/src/GLib/loop.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>1130 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='transforms.jl-5ba24cede11f1bdd6b133939d266ffe83980a4c8.html'>../../.julia/packages/Enzyme/X4pFp/src/llvm/transforms.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>851 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='libLLVM.jl-f6b7358a5aab7a676903902be46964988ebadd1e.html'>../../.julia/packages/LLVM/iza6e/lib/16/libLLVM.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>837 &#40;1 &#37;&#41;</td>
+          <td>
+            <a href='api.jl-83f40ca580e6a024c8068aaa57f60d6bbff3ff86.html'>../../.julia/packages/Enzyme/X4pFp/src/api.jl</a>
+          </td>
+        </tr>
+        <tr>
+          <td>564 &#40;0 &#37;&#41;</td>
+          <td>
+            <a href='libuv.jl-ff85b361e848872e815d2f63789cfd4f7ac13b14.html'>../../.julia/juliaup/julia-1.11.5&#43;0.x64.apple.darwin14/share/julia/base/libuv.jl</a>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      <a href='files.html'>All files</a>
+    </p>
+  </body>
+</html>
+

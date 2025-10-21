@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv='Content-Type' content='text/html; charset=utf-8'></meta>
+    <link rel='stylesheet' type='text/css' href='statprofiler.css'></link>
+    <title>StatProfilerHTML - ../../.julia/packages/Optimisers/W5seC/src/utils.jl</title>
+  </head>
+  <body>
+    <div class='report-header'>
+      <div class='backlink'>
+        <a href='index.html'>Report index</a>
+      </div>
+      <div class='report-title'>
+        StatProfilerHTML.jl report
+      </div>
+      <div class='generated-on'>
+        Generated on Tue, 21 Oct 2025 15:48:06
+      </div>
+    </div>
+    <table>
+      <caption>File source code</caption>
+      <thead>
+        <tr>
+          <th>Line</th>
+          <th>Exclusive</th>
+          <th>Inclusive</th>
+          <th>Code</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr id='L1'>
+          <td class='lineno'>1</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'></span>
+          </td>
+        </tr>
+        <tr id='L2'>
+          <td class='lineno'>2</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'>193 &#40;0 &#37;&#41;</td>
+          <td>
+            <div class='call-sites'>
+              193 &#40;0 &#37;&#41;
+              samples spent in mapvalue
+              <br />
+              
+              181 &#40;94 &#37;&#41; &#40;incl.&#41;
+              when called from #_update&#33;#7
+              <a href='interface.jl-164793c97bf0dc3115170eb8f0744c13c56900c8.html#L85'>line 85</a>
+              <br />
+              
+              12 &#40;6 &#37;&#41; &#40;incl.&#41;
+              when called from #_setup#3
+              <a href='interface.jl-164793c97bf0dc3115170eb8f0744c13c56900c8.html#L48'>line 48</a>
+              <br />
+            </div>
+            <div class='callees'>
+              193 &#40;100 &#37;&#41;
+              samples spent calling
+              <a href='namedtuple.jl-a15fef5776394144aee545ebddbb19d5cb9e3972.html#L262'>map</a>
+              <br />
+            </div>
+            <span class='code'>mapvalue&#40;f, x...&#41; &#61; map&#40;f, x...&#41;</span>
+          </td>
+        </tr>
+        <tr id='L3'>
+          <td class='lineno'>3</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>mapvalue&#40;f, x::Dict, ys...&#41; &#61; Dict&#40;k &#61;&gt; f&#40;v, &#40;get&#40;y, k, nothing&#41; for y in ys&#41;...&#41; for &#40;k,v&#41; in x&#41;</span>
+          </td>
+        </tr>
+        <tr id='L4'>
+          <td class='lineno'>4</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'></span>
+          </td>
+        </tr>
+        <tr id='L5'>
+          <td class='lineno'>5</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>mapkey&#40;f, x::NamedTuple&#123;Ks&#125;&#41; where Ks &#61; NamedTuple&#123;Ks&#125;&#40;map&#40;f, Ks&#41;&#41;</span>
+          </td>
+        </tr>
+        <tr id='L6'>
+          <td class='lineno'>6</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>mapkey&#40;f, x::Dict&#41; &#61; Dict&#40;k &#61;&gt; f&#40;k&#41; for k in keys&#40;x&#41;&#41;</span>
+          </td>
+        </tr>
+        <tr id='L7'>
+          <td class='lineno'>7</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>mapkey&#40;f, x::Tuple&#41; &#61; ntuple&#40;i -&gt; f&#40;i&#41;, length&#40;x&#41;&#41;</span>
+          </td>
+        </tr>
+        <tr id='L8'>
+          <td class='lineno'>8</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>mapkey&#40;f, x::AbstractArray&#41; &#61; &#91;f&#40;i&#41; for i&#61;1:length&#40;x&#41;&#93;</span>
+          </td>
+        </tr>
+        <tr id='L9'>
+          <td class='lineno'>9</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'></span>
+          </td>
+        </tr>
+        <tr id='L10'>
+          <td class='lineno'>10</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'>13 &#40;0 &#37;&#41;</td>
+          <td>
+            <div class='call-sites'>
+              13 &#40;0 &#37;&#41;
+              samples spent in foreachvalue
+              <br />
+              
+              13 &#40;100 &#37;&#41; &#40;incl.&#41;
+              when called from _grads&#33;
+              <a href='interface.jl-164793c97bf0dc3115170eb8f0744c13c56900c8.html#L126'>line 126</a>
+              <br />
+            </div>
+            <div class='callees'>
+              13 &#40;100 &#37;&#41;
+              samples spent calling
+              <a href='abstractarray.jl-63bb67317a0ea7ac7bae584639ad389f5a0bc821.html#L3188'>foreach</a>
+              <br />
+            </div>
+            <span class='code'>foreachvalue&#40;f, x...&#41; &#61; foreach&#40;f, x...&#41;</span>
+          </td>
+        </tr>
+        <tr id='L11'>
+          <td class='lineno'>11</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'></span>
+          </td>
+        </tr>
+        <tr id='L12'>
+          <td class='lineno'>12</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>foreachvalue&#40;f, x::Dict, ys...&#41; &#61; foreach&#40;pairs&#40;x&#41;&#41; do &#40;k, v&#41;</span>
+          </td>
+        </tr>
+        <tr id='L13'>
+          <td class='lineno'>13</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>  f&#40;v, &#40;get&#40;y, k, nothing&#41; for y in ys&#41;...&#41;</span>
+          </td>
+        </tr>
+        <tr id='L14'>
+          <td class='lineno'>14</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>end</span>
+          </td>
+        </tr>
+        <tr id='L15'>
+          <td class='lineno'>15</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'></span>
+          </td>
+        </tr>
+        <tr id='L16'>
+          <td class='lineno'>16</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>ofeltype&#40;x, y&#41; &#61; convert&#40;float&#40;eltype&#40;x&#41;&#41;, y&#41;</span>
+          </td>
+        </tr>
+        <tr id='L17'>
+          <td class='lineno'>17</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'></span>
+          </td>
+        </tr>
+        <tr id='L18'>
+          <td class='lineno'>18</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>&quot;&quot;&quot;</span>
+          </td>
+        </tr>
+        <tr id='L19'>
+          <td class='lineno'>19</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>    _eps&#40;Type&#123;T&#125;, val&#41;</span>
+          </td>
+        </tr>
+        <tr id='L20'>
+          <td class='lineno'>20</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'></span>
+          </td>
+        </tr>
+        <tr id='L21'>
+          <td class='lineno'>21</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>Mostly this produces &#96;real&#40;T&#41;&#40;val&#41;&#96;, so that &#96;_eps&#40;Float32, 1e-8&#41; &#61;&#61;&#61; 1f-8&#96; will</span>
+          </td>
+        </tr>
+        <tr id='L22'>
+          <td class='lineno'>22</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>convert the Float64 parameter epsilon to work nicely with Float32 parameter arrays.</span>
+          </td>
+        </tr>
+        <tr id='L23'>
+          <td class='lineno'>23</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'></span>
+          </td>
+        </tr>
+        <tr id='L24'>
+          <td class='lineno'>24</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>But for Float16, it imposes a minimum of &#96;Float16&#40;1e-7&#41;&#96;, unless &#96;val&#61;&#61;0&#96;.</span>
+          </td>
+        </tr>
+        <tr id='L25'>
+          <td class='lineno'>25</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>This is basically a hack to increase the default epsilon, to help many optimisers avoid NaN.</span>
+          </td>
+        </tr>
+        <tr id='L26'>
+          <td class='lineno'>26</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>&quot;&quot;&quot;</span>
+          </td>
+        </tr>
+        <tr id='L27'>
+          <td class='lineno'>27</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>_eps&#40;T::Type&#123;&lt;:Number&#125;, e&#41; &#61; real&#40;float&#40;T&#41;&#41;&#40;e&#41; </span>
+          </td>
+        </tr>
+        <tr id='L28'>
+          <td class='lineno'>28</td>
+          <td class='tracecount excl'></td>
+          <td class='tracecount incl'></td>
+          <td>
+            
+            
+            <span class='code'>_eps&#40;T::Type&#123;Float16&#125;, e&#41; &#61; e &#61;&#61; 0 ? T&#40;0&#41; : max&#40;T&#40;1e-7&#41;, T&#40;e&#41;&#41;</span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>
+

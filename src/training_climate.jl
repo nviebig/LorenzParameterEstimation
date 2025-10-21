@@ -35,37 +35,6 @@
 # - Add parameter history tracking to train_statistics
 # - Refactor PDF averaging for per-IC statistics if needed
 
-# ==========================================
-# LorenzParameterEstimation: TrainingClimate
-# ==========================================
-
-# --- Imports and Exports ---
-# (List of modules and exported functions)
-
-# --- Configuration Types ---
-# ClimateConfig: Holds simulation and training parameters
-
-# --- Main Training Function ---
-# train_statistics: Runs training loop for parameter estimation
-#   - Simulates Lorenz system for each initial condition
-#   - Computes statistics (mean, PDF, etc.)
-#   - Calculates loss and updates parameters
-
-# --- PDF and Loss Functions ---
-# soft_hist_3d: Kernel density estimation for 3D PDFs
-# _loss_pdf_core_3d: Computes PDF loss for ensemble of ICs
-
-# --- Utility Functions ---
-# stratified_indices: Generates stratified time indices for sampling
-# _mask_grads: Applies update mask to gradients
-
-# --- Debugging and Verbose Output ---
-# (Print statements for inspecting training progress)
-
-# --- TODO ---
-# - Add parameter history tracking to train_statistics
-# - Refactor PDF averaging for per-IC statistics
-
 
 module TrainingClimate
 
@@ -188,6 +157,28 @@ end
 
 
 
+# Helpers with stable names so Julia's profiler can attribute time to these call sites.
+@noinline function _loss_entry_pdf3d(σ, ρ, β, x_s, y_s, z_s, θ,
+                                     dt::S, steps::Int,
+                                     U::AbstractMatrix{S}, I::AbstractVector{Int},
+                                     centers::AbstractVector{S}, h::S,
+                                     p3d_t::AbstractVector{S},
+                                     mode::Symbol, sinkε::S, sinkiters::Int)::S where {S<:Real}
+    _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,
+                      dt, steps, U, I, centers, h, p3d_t, mode, sinkε, sinkiters)
+end
+
+@noinline function _loss_entry_stats(σ, ρ, β, x_s, y_s, z_s, θ,
+                                     dt::S, steps::Int,
+                                     U::AbstractMatrix{S},
+                                     target::AbstractVector{S},
+                                     I::AbstractVector{Int},
+                                     stats_nt::NTuple{M,Symbol},
+                                     loss_mode::Symbol)::S where {S<:Real,M}
+    _loss_subsample_core(σ, ρ, β, x_s, y_s, z_s, θ,
+                         dt, steps, U, target, I, stats_nt, loss_mode)
+end
+
 """
     train_statistics(initial_params;
                     target,
@@ -212,6 +203,8 @@ Unified training for mean, std, and 3D PDF statistics. Selects appropriate loss 
 - For PDF: uses pdf_loss_mode (:kl, :cross_entropy, :wasserstein)
 - target: NamedTuple for mean/std, NamedTuple with :centers and :p3d for PDF
 Returns (params, loss_history, final_statistics, stats_history)
+
+For profiling, wrap calls with Julia's profiler, e.g. `Profile.clear(); Profile.@profile train_statistics(...)`.
 """
 function train_statistics(
     initial_params::L63Parameters;
@@ -318,6 +311,7 @@ function train_statistics(
     I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
 
     # Verbose output (Displays initial training configuration details if verbose mode is enabled.)
+    # Note: `epoch` is not defined yet here (pre-loop). Print initial info when verbose is true.
     if verbose
         numICs = (cfgT.initial_conditions === nothing) ? 1 : size(cfgT.initial_conditions,2)
         if is_pdf
@@ -361,18 +355,8 @@ function train_statistics(
             τ       = sched.tau
             h_curr  = h_end + (h_start - h_end) * exp(-T(epoch)/τ)
             # --- compute loss and gradients ---
-            # Defines a closure loss_entry_pdf3d that calls _loss_pdf_core_3d with the current parameters and epoch settings.
-            @noinline function loss_entry_pdf3d(σ, ρ, β, x_s, y_s, z_s, θ,
-                                                dt::S, steps::Int,
-                                                U::AbstractMatrix{S}, I::AbstractVector{Int},
-                                                centers::AbstractVector{S}, h::S,
-                                                p3d_t::AbstractVector{S},
-                                                mode::Symbol, sinkε::S, sinkiters::Int)::S where {S<:Real}
-                _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,
-                                  dt, steps, U, I, centers, h, p3d_t, mode, sinkε, sinkiters)
-            end
-            # Computes the loss for the current epoch using the loss_entry_pdf3d function.
-            L = loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
+            # Use a named helper so profiling shows a stable frame instead of an anonymous closure.
+            L = _loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
                      dt_epoch, steps_epoch, U_epoch, I,
                      centers, h_curr,                    # <— here
                      p3d_tgt,
@@ -383,7 +367,7 @@ function train_statistics(
             # Computes gradients using Enzyme's automatic differentiation for the loss_entry_pdf3d function.
             gtuple = Enzyme.autodiff(
                 Enzyme.set_runtime_activity(Enzyme.Reverse),
-                loss_entry_pdf3d,
+                _loss_entry_pdf3d,
                 Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
                 Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
                 Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
@@ -415,24 +399,14 @@ function train_statistics(
 
             verbose && @printf("Epoch %4d | σ=%.6f (Δ%.2e)  ρ=%.6f (Δ%.2e)  β=%.6f (Δ%.2e)  | loss=%.6e | g_norm=%.3e\n",epoch,new.σ, new.σ - old.σ,new.ρ, new.ρ - old.ρ,new.β, new.β - old.β, L, _gradnorm(gstate))
         else
-            # Defines a closure loss_entry that calls _loss_subsample_core with the current parameters and epoch settings.
-            @noinline function loss_entry(σ, ρ, β, x_s, y_s, z_s, θ,
-                                          dt::S, steps::Int,
-                                          U::AbstractMatrix{S},
-                                          target::AbstractVector{S},
-                                          I::AbstractVector{Int},
-                                          stats_nt::NTuple{M,Symbol},
-                                          loss_mode::Symbol)::S where {S<:Real, M}
-                _loss_subsample_core(σ, ρ, β, x_s, y_s, z_s, θ,
-                                    dt, steps, U, target, I, stats_nt, loss_mode)
-            end
+            # Same idea: rely on a top-level helper for profiling readability.
             loss_mode_sym = cfgT.loss_mode
-            L = loss_entry(σ, ρ, β, x_s, y_s, z_s, θ,
+            L = _loss_entry_stats(σ, ρ, β, x_s, y_s, z_s, θ,
                         dt_epoch, steps_epoch, U_epoch, target_vec, I, stats_tuple, loss_mode_sym)
             losses[epoch] = L
             gtuple = Enzyme.autodiff(
                 Enzyme.set_runtime_activity(Enzyme.Reverse),
-                loss_entry,
+                _loss_entry_stats,
                 Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
                 Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
                 Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
@@ -591,7 +565,7 @@ end
 end
 
 # ================================
-# Statistics (mean only for now)
+# Statistics
 # ================================
 
 # Accumulate time-subsampled mean for a single trajectory matrix 'U' on selected rows 'I'
@@ -704,8 +678,6 @@ function jittered_grid_burnin(rng::AbstractRNG, steps::Int, k::Int; burn=0.3, ji
 end
 
 
-
-
 # ================================
 # Gradient clipping
 # ================================
@@ -719,7 +691,6 @@ end
         return g
     end
 end
-
 
 # ================================
 # Forward: stats over batch with time subsampling
@@ -758,61 +729,6 @@ function _stats_over_batch_subsample(params::L63Parameters{T},
     end
     return NamedTuple{stats}(map(k -> outD[k], stats))
 end
-
-
-# In _loss_subsample, call the in-place stepper and DO NOT assign:
-#    was:   u = rk4_step(u, p, cfg.dt)
-#    now:   rk4_step!(u, p, cfg.dt)
-
-function _loss_subsample(σ, ρ, β, x_s, y_s, z_s, θ,
-                              cfg::ClimateConfig{T},
-                              base_u0::AbstractVector{T},
-                              target_mean::AbstractVector{T},
-                              I::AbstractVector{Int}) where {T}
-
-    p = L63Parameters(T(σ),T(ρ),T(β),T(x_s),T(y_s),T(z_s),T(θ))
-
-    U = cfg.initial_conditions === nothing ? reshape(T.(base_u0), 3, 1) : T.(cfg.initial_conditions)
-    B = size(U,2)
-    k = length(I); invk = one(T)/T(k)
-
-    acc = zeros(T,3)
-
-    @inbounds for b in 1:B
-        u   = copy(@view U[:,b])      # current state
-        k1  = similar(u); k2 = similar(u); k3 = similar(u); k4 = similar(u)
-        tmp = similar(u)
-
-        trow = 1
-        idxp = 1
-        nextI = I[idxp]
-
-        @maybe_checkpoint begin
-            for _ in 1:cfg.steps
-                rk4_step!(u, p, cfg.dt, k1, k2, k3, k4, tmp) 
-                trow += 1
-                if trow == nextI
-                    acc[1] += u[1]*invk
-                    acc[2] += u[2]*invk
-                    acc[3] += u[3]*invk
-                    idxp += 1
-                    if idxp > k
-                        # (optional) break
-                        # break
-                    else
-                        nextI = I[idxp]
-                    end
-                end
-            end
-        end
-    end
-
-    mean_batch = acc .* (one(T)/T(B))
-
-    L = _stat_loss(mean_batch, target_mean, cfg.loss_mode)
-    return L::T
-end
-
 
 
 # === union-free loss core (no cfg capture, no Union fields) ===
@@ -1018,7 +934,7 @@ end
     return nothing
 end
 
-
+"""
 # fast soft histogram: only visit bins within ±R of nearest center (uniform grid assumed)
 function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::AbstractVector{T},
                             centers::AbstractVector{T}, h::T, out::AbstractVector{T};
@@ -1063,6 +979,60 @@ function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::Ab
         end
     end
     s = sum(out); s > eps(T) ? (out ./= s) : fill!(out, one(T)/length(out))
+    return nothing
+end"""
+
+# --- Drop-in faster kernel (separable Gaussian) ------------------------------
+@inline function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::AbstractVector{T},
+                                         centers::AbstractVector{T}, h::T, out::AbstractVector{T};
+                                         R::Int = 3) where {T}
+    @assert length(out) == length(centers)^3
+    fill!(out, zero(T))
+
+    m      = length(centers)
+    Δ      = (centers[end] - centers[1]) / (m - 1)
+    invΔ   = one(T) / Δ
+    inv2h2 = one(T) / (2*h*h)
+    him1   = m - 1
+    @inbounds @fastmath for s in eachindex(xs)
+        # map sample -> nearest center indices (clamped)
+        posx = (xs[s] - centers[1]) * invΔ; posx = isfinite(posx) ? clamp(posx, zero(T), T(him1)) : (posx > zero(T) ? T(him1) : zero(T))
+        posy = (ys[s] - centers[1]) * invΔ; posy = isfinite(posy) ? clamp(posy, zero(T), T(him1)) : (posy > zero(T) ? T(him1) : zero(T))
+        posz = (zs[s] - centers[1]) * invΔ; posz = isfinite(posz) ? clamp(posz, zero(T), T(him1)) : (posz > zero(T) ? T(him1) : zero(T))
+        ix0  = Int(round(posx)) + 1
+        iy0  = Int(round(posy)) + 1
+        iz0  = Int(round(posz)) + 1
+
+        iL = max(1, ix0 - R); iH = min(m, ix0 + R)
+        jL = max(1, iy0 - R); jH = min(m, iy0 + R)
+        kL = max(1, iz0 - R); kH = min(m, iz0 + R)
+
+        # 1-D Gaussian weights (separable kernel) → only O(R) exp calls per axis
+        ex = Vector{T}(undef, iH - iL + 1)
+        ey = Vector{T}(undef, jH - jL + 1)
+        ez = Vector{T}(undef, kH - kL + 1)
+        @inbounds @fastmath for i in eachindex(ex);  dx = xs[s] - centers[iL + i - 1];  ex[i] = exp(-(dx*dx) * inv2h2); end
+        @inbounds @fastmath for j in eachindex(ey);  dy = ys[s] - centers[jL + j - 1];  ey[j] = exp(-(dy*dy) * inv2h2); end
+        @inbounds @fastmath for k in eachindex(ez);  dz = zs[s] - centers[kL + k - 1];  ez[k] = exp(-(dz*dz) * inv2h2); end
+
+        # accumulate outer products ex ⊗ ey ⊗ ez into the flattened 3-D block
+        @inbounds @simd for ii in 0:(length(ex)-1)
+            base_i = (iL + ii - 1) * m * m
+            wi = ex[ii+1]
+            @simd for jj in 0:(length(ey)-1)
+                base_ij = base_i + (jL + jj - 1) * m
+                wij = wi * ey[jj+1]
+                @simd for kk in 0:(length(ez)-1)
+                    out[base_ij + (kL + kk)] += wij * ez[kk+1]
+                end
+            end
+        end
+    end
+    # normalize
+    s = sum(out)
+    if s > eps(T); @inbounds out ./= s
+    else;          @inbounds fill!(out, one(T)/length(out))
+    end
     return nothing
 end
 
