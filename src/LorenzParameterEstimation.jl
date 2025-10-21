@@ -3,39 +3,25 @@ module LorenzParameterEstimation
 # Core types
 export L63Parameters, L63System, L63Solution, L63TrainingConfig
 
+
 # Core functionality  
 export integrate, compute_loss, compute_gradients, compute_gradients_modular, compute_gradients_extended, window_rmse, train!, estimate_parameters
 
-# Modern modular training (now unified for all parameters)
+export L63Parameters, L63System, L63Solution, L63TrainingConfig
+export integrate, compute_loss, compute_gradients, compute_gradients_modular, compute_gradients_extended, window_rmse, train!, estimate_parameters
 export modular_train!
-
-# Loss functions (using Flux.jl ecosystem)
 export window_linear, window_mae, window_mse, weighted_window_loss, probabilistic_loss, adaptive_loss,
        huber_loss, mae, mse, huber_enzyme_function, pseudohuber_enzyme_function
-# Note: huber_loss, mae, mse are implemented internally - not re-exported from Flux
-
-# Training metrics and tracking
 export TrainingMetrics, reset_metrics!, record_window_metrics!, record_batch_metrics!, 
        record_epoch_metrics!, compute_gradient_statistics, compute_gradients_with_tracking
-
-# Optimizer configurations
 export OptimizerConfig
 export adam_config, sgd_config, adamw_config, adagrad_config, rmsprop_config
-
-# Climate statistics training
-export train_climate, evaluate_climate_statistics, climate_statistics
-
-# Utility functions
+export train_statistics, evaluate_climate_statistics, climate_statistics, soft_hist_3d, make_pdf_config, hard_hist_3d, soft_hist_3d_local, PdfSchedule
 export lorenz_rhs, classic_params, stable_params, parameter_error
 export with_coordinate_shifts, with_theta, classic_lorenz, has_coordinate_shifts, has_theta_modification, parameter_summary
-
-# Visualization functions (loaded via extensions when Plots.jl is available)
 export plot_trajectory, plot_phase_portrait, animate_comparison, create_training_gif,
        plot_loss_evolution, plot_gradient_evolution, plot_gradient_scatter, create_gradient_chaos_gif
-
-# Climate statistics training
-export train_climate, evaluate_climate_statistics, climate_statistics, evaluate_statistics
-
+export evaluate_statistics, ClimateConfig
 using LinearAlgebra
 using Statistics
 using Printf
