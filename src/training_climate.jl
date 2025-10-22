@@ -42,6 +42,7 @@ using Enzyme
 using Optimisers
 using Random
 using StatsBase
+using Base.Threads: @threads, nthreads, threadid
 using Printf: @printf, @sprintf
 
 # Optional Checkpointing.jl integration (reduces Enzyme reverse-mode replay cost)
@@ -365,6 +366,9 @@ function train_statistics(
             Random.shuffle!(cfgT.rng, idx_order)
         end
 
+        chunk_starts = collect(1:batch_cols:B)
+        use_threads = length(chunk_starts) > 1 && nthreads() > 1
+
         if is_pdf
             # ---- bandwidth annealing (smooth → sharp) ----
             Δ = (centers[end]-centers[1])/(length(centers)-1)
@@ -373,49 +377,107 @@ function train_statistics(
             h_end   = sched.h_end_mult   * Δ
             τ       = sched.tau
             h_curr  = h_end + (h_start - h_end) * exp(-T(epoch)/τ)
-            grad_acc = _zero_grad_state(pstate)
             loss_acc = zero(T)
             weight_acc = zero(T)
+            grad_acc = _zero_grad_state(pstate)
 
-            # --- compute loss and gradients over micro-batches ---
-            # (accumulate gradients over batches to simulate full-batch training)
-            for start in 1:batch_cols:B
-                stop = min(start + batch_cols - 1, B)
-                cols = idx_order[start:stop]
-                U_batch = @view U_epoch[:, cols]
-                t_loss_ns = timing_enabled ? time_ns() : 0
-                L = _loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
-                         dt_epoch, steps_epoch, U_batch, I,
-                         centers, h_curr,
-                         p3d_tgt,
-                         pdf_mode, sinkεT, cfgT.pdf.sinkhorn_iters)
-                if timing_enabled
-                    _timing_add!(section_times, :loss_eval, (time_ns() - t_loss_ns) * 1.0e-9)
+            if use_threads
+                grad_locals = [_zero_grad_state(pstate) for _ in 1:nthreads()]
+                loss_locals = zeros(T, nthreads())
+                weight_locals = zeros(T, nthreads())
+                loss_eval_locals = zeros(Float64, nthreads())
+                autodiff_locals = zeros(Float64, nthreads())
+
+                @threads for chunk_idx in eachindex(chunk_starts)
+                    tid = threadid()
+                    start = chunk_starts[chunk_idx]
+                    stop = min(start + batch_cols - 1, B)
+                    cols = idx_order[start:stop]
+                    U_batch = @view U_epoch[:, cols]
+                    t_loss_ns = timing_enabled ? time_ns() : 0
+                    L = _loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
+                             dt_epoch, steps_epoch, U_batch, I,
+                             centers, h_curr,
+                             p3d_tgt,
+                             pdf_mode, sinkεT, cfgT.pdf.sinkhorn_iters)
+                    if timing_enabled
+                        loss_eval_locals[tid] += (time_ns() - t_loss_ns) * 1.0e-9
+                    end
+                    t_grad_ns = timing_enabled ? time_ns() : 0
+                    gtuple = Enzyme.autodiff(
+                        Enzyme.set_runtime_activity(Enzyme.Reverse),
+                        _loss_entry_pdf3d,
+                        Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
+                        Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
+                        Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
+                        Enzyme.Const(U_batch), Enzyme.Const(I),
+                        Enzyme.Const(centers), Enzyme.Const(h_curr),
+                        Enzyme.Const(p3d_tgt),
+                        Enzyme.Const(pdf_mode), Enzyme.Const(sinkεT), Enzyme.Const(cfgT.pdf.sinkhorn_iters),
+                    )
+                    if timing_enabled
+                        autodiff_locals[tid] += (time_ns() - t_grad_ns) * 1.0e-9
+                    end
+                    g = _flatten_grads(gtuple)
+                    gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
+                                  x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
+                    gstate = _mask_grads(gstate_all, update_mask)
+                    batch_weight = T(length(cols))
+                    loss_locals[tid] += L * batch_weight
+                    weight_locals[tid] += batch_weight
+                    _accumulate_grad_state!(grad_locals[tid], gstate, batch_weight)
                 end
-                t_grad_ns = timing_enabled ? time_ns() : 0
-                gtuple = Enzyme.autodiff(
-                    Enzyme.set_runtime_activity(Enzyme.Reverse),
-                    _loss_entry_pdf3d,
-                    Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
-                    Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
-                    Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
-                    Enzyme.Const(U_batch), Enzyme.Const(I),
-                    Enzyme.Const(centers), Enzyme.Const(h_curr),
-                    Enzyme.Const(p3d_tgt),
-                    Enzyme.Const(pdf_mode), Enzyme.Const(sinkεT), Enzyme.Const(cfgT.pdf.sinkhorn_iters),
-                )
-                if timing_enabled
-                    _timing_add!(section_times, :autodiff, (time_ns() - t_grad_ns) * 1.0e-9)
+
+                loss_acc = sum(loss_locals)
+                weight_acc = sum(weight_locals)
+                grad_acc = _zero_grad_state(pstate)
+                for local_grad in grad_locals
+                    _accumulate_grad_state!(grad_acc, local_grad, one(T))
                 end
-                g = _flatten_grads(gtuple)
-                gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
-                              x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
-                gstate = _mask_grads(gstate_all, update_mask)
-                batch_weight = T(length(cols))
-                loss_acc += L * batch_weight
-                weight_acc += batch_weight
-                _accumulate_grad_state!(grad_acc, gstate, batch_weight)
+                if timing_enabled
+                    _timing_add!(section_times, :loss_eval, sum(loss_eval_locals))
+                    _timing_add!(section_times, :autodiff, sum(autodiff_locals))
+                end
+            else
+                for start in chunk_starts
+                    stop = min(start + batch_cols - 1, B)
+                    cols = idx_order[start:stop]
+                    U_batch = @view U_epoch[:, cols]
+                    t_loss_ns = timing_enabled ? time_ns() : 0
+                    L = _loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
+                             dt_epoch, steps_epoch, U_batch, I,
+                             centers, h_curr,
+                             p3d_tgt,
+                             pdf_mode, sinkεT, cfgT.pdf.sinkhorn_iters)
+                    if timing_enabled
+                        _timing_add!(section_times, :loss_eval, (time_ns() - t_loss_ns) * 1.0e-9)
+                    end
+                    t_grad_ns = timing_enabled ? time_ns() : 0
+                    gtuple = Enzyme.autodiff(
+                        Enzyme.set_runtime_activity(Enzyme.Reverse),
+                        _loss_entry_pdf3d,
+                        Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
+                        Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
+                        Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
+                        Enzyme.Const(U_batch), Enzyme.Const(I),
+                        Enzyme.Const(centers), Enzyme.Const(h_curr),
+                        Enzyme.Const(p3d_tgt),
+                        Enzyme.Const(pdf_mode), Enzyme.Const(sinkεT), Enzyme.Const(cfgT.pdf.sinkhorn_iters),
+                    )
+                    if timing_enabled
+                        _timing_add!(section_times, :autodiff, (time_ns() - t_grad_ns) * 1.0e-9)
+                    end
+                    g = _flatten_grads(gtuple)
+                    gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
+                                  x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
+                    gstate = _mask_grads(gstate_all, update_mask)
+                    batch_weight = T(length(cols))
+                    loss_acc += L * batch_weight
+                    weight_acc += batch_weight
+                    _accumulate_grad_state!(grad_acc, gstate, batch_weight)
+                end
             end
+
             weight_acc == zero(T) && error("Encountered empty batch while accumulating gradients.")
             losses[epoch] = loss_acc / weight_acc
             gstate = _scale_grad_state!(grad_acc, one(T) / weight_acc)
@@ -444,41 +506,97 @@ function train_statistics(
             end
         else
             loss_mode_sym = cfgT.loss_mode
-            grad_acc = _zero_grad_state(pstate)
             loss_acc = zero(T)
             weight_acc = zero(T)
-            for start in 1:batch_cols:B
-                stop = min(start + batch_cols - 1, B)
-                cols = idx_order[start:stop]
-                U_batch = @view U_epoch[:, cols]
-                t_loss_ns = timing_enabled ? time_ns() : 0
-                L = _loss_entry_stats(σ, ρ, β, x_s, y_s, z_s, θ,
-                            dt_epoch, steps_epoch, U_batch, target_vec, I, stats_tuple, loss_mode_sym)
-                if timing_enabled
-                    _timing_add!(section_times, :loss_eval, (time_ns() - t_loss_ns) * 1.0e-9)
+            grad_acc = _zero_grad_state(pstate)
+
+            if use_threads
+                grad_locals = [_zero_grad_state(pstate) for _ in 1:nthreads()]
+                loss_locals = zeros(T, nthreads())
+                weight_locals = zeros(T, nthreads())
+                loss_eval_locals = zeros(Float64, nthreads())
+                autodiff_locals = zeros(Float64, nthreads())
+
+                @threads for chunk_idx in eachindex(chunk_starts)
+                    tid = threadid()
+                    start = chunk_starts[chunk_idx]
+                    stop = min(start + batch_cols - 1, B)
+                    cols = idx_order[start:stop]
+                    U_batch = @view U_epoch[:, cols]
+                    t_loss_ns = timing_enabled ? time_ns() : 0
+                    L = _loss_entry_stats(σ, ρ, β, x_s, y_s, z_s, θ,
+                                dt_epoch, steps_epoch, U_batch, target_vec, I, stats_tuple, loss_mode_sym)
+                    if timing_enabled
+                        loss_eval_locals[tid] += (time_ns() - t_loss_ns) * 1.0e-9
+                    end
+                    t_grad_ns = timing_enabled ? time_ns() : 0
+                    gtuple = Enzyme.autodiff(
+                        Enzyme.set_runtime_activity(Enzyme.Reverse),
+                        _loss_entry_stats,
+                        Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
+                        Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
+                        Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
+                        Enzyme.Const(U_batch), Enzyme.Const(target_vec), Enzyme.Const(I),
+                        Enzyme.Const(stats_tuple), Enzyme.Const(loss_mode_sym),
+                    )
+                    if timing_enabled
+                        autodiff_locals[tid] += (time_ns() - t_grad_ns) * 1.0e-9
+                    end
+                    g = _flatten_grads(gtuple)
+                    gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
+                                  x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
+                    gstate = _mask_grads(gstate_all, update_mask)
+                    batch_weight = T(length(cols))
+                    loss_locals[tid] += L * batch_weight
+                    weight_locals[tid] += batch_weight
+                    _accumulate_grad_state!(grad_locals[tid], gstate, batch_weight)
                 end
-                t_grad_ns = timing_enabled ? time_ns() : 0
-                gtuple = Enzyme.autodiff(
-                    Enzyme.set_runtime_activity(Enzyme.Reverse),
-                    _loss_entry_stats,
-                    Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
-                    Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
-                    Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
-                    Enzyme.Const(U_batch), Enzyme.Const(target_vec), Enzyme.Const(I),
-                    Enzyme.Const(stats_tuple), Enzyme.Const(loss_mode_sym),
-                )
-                if timing_enabled
-                    _timing_add!(section_times, :autodiff, (time_ns() - t_grad_ns) * 1.0e-9)
+
+                loss_acc = sum(loss_locals)
+                weight_acc = sum(weight_locals)
+                grad_acc = _zero_grad_state(pstate)
+                for local_grad in grad_locals
+                    _accumulate_grad_state!(grad_acc, local_grad, one(T))
                 end
-                g = _flatten_grads(gtuple)
-                gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
-                              x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
-                gstate = _mask_grads(gstate_all, update_mask)
-                batch_weight = T(length(cols))
-                loss_acc += L * batch_weight
-                weight_acc += batch_weight
-                _accumulate_grad_state!(grad_acc, gstate, batch_weight)
+                if timing_enabled
+                    _timing_add!(section_times, :loss_eval, sum(loss_eval_locals))
+                    _timing_add!(section_times, :autodiff, sum(autodiff_locals))
+                end
+            else
+                for start in chunk_starts
+                    stop = min(start + batch_cols - 1, B)
+                    cols = idx_order[start:stop]
+                    U_batch = @view U_epoch[:, cols]
+                    t_loss_ns = timing_enabled ? time_ns() : 0
+                    L = _loss_entry_stats(σ, ρ, β, x_s, y_s, z_s, θ,
+                                dt_epoch, steps_epoch, U_batch, target_vec, I, stats_tuple, loss_mode_sym)
+                    if timing_enabled
+                        _timing_add!(section_times, :loss_eval, (time_ns() - t_loss_ns) * 1.0e-9)
+                    end
+                    t_grad_ns = timing_enabled ? time_ns() : 0
+                    gtuple = Enzyme.autodiff(
+                        Enzyme.set_runtime_activity(Enzyme.Reverse),
+                        _loss_entry_stats,
+                        Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
+                        Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
+                        Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
+                        Enzyme.Const(U_batch), Enzyme.Const(target_vec), Enzyme.Const(I),
+                        Enzyme.Const(stats_tuple), Enzyme.Const(loss_mode_sym),
+                    )
+                    if timing_enabled
+                        _timing_add!(section_times, :autodiff, (time_ns() - t_grad_ns) * 1.0e-9)
+                    end
+                    g = _flatten_grads(gtuple)
+                    gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
+                                  x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
+                    gstate = _mask_grads(gstate_all, update_mask)
+                    batch_weight = T(length(cols))
+                    loss_acc += L * batch_weight
+                    weight_acc += batch_weight
+                    _accumulate_grad_state!(grad_acc, gstate, batch_weight)
+                end
             end
+
             weight_acc == zero(T) && error("Encountered empty batch while accumulating gradients.")
             losses[epoch] = loss_acc / weight_acc
             gstate = _scale_grad_state!(grad_acc, one(T) / weight_acc)
