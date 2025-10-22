@@ -121,6 +121,7 @@ struct ClimateConfig{T}
     loss_mode::Symbol
     pdf::PdfConfig{T}
     schedule::PdfSchedule{T}
+    batch_size::Int
 end
 
 # Default constructor for a given element type T
@@ -129,17 +130,19 @@ function ClimateConfig(::Type{T};
     steps::Int = 4000,
     initial_conditions::Union{Nothing,AbstractMatrix{T}} = nothing,
     samples_per_epoch::Int = 256,
+    batch_size::Int = 0,
     rng::Random.AbstractRNG = Random.default_rng(),
     loss_mode::Symbol = :sse,
     pdf::PdfConfig{T} = make_pdf_config(T),
     schedule::PdfSchedule{T} = PdfSchedule(T),
 ) where {T}
-    ClimateConfig{T}(dt, steps, initial_conditions, samples_per_epoch, rng, loss_mode, pdf, schedule)
+    ClimateConfig{T}(dt, steps, initial_conditions, samples_per_epoch, rng, loss_mode, pdf, schedule, max(batch_size, 0))
 end
 
 # Convenience constructor that infers T from dt / ICs / pdf
 function ClimateConfig(; dt::Real=0.01, steps::Int=4000,
     initial_conditions=nothing, samples_per_epoch::Int=256,
+    batch_size::Int=0,
     rng::Random.AbstractRNG=Random.default_rng(), loss_mode::Symbol=:sse,
     pdf=make_pdf_config(Float64), schedule=PdfSchedule(Float64))
 
@@ -152,7 +155,7 @@ function ClimateConfig(; dt::Real=0.01, steps::Int=4000,
     schedT = PdfSchedule{T}(T(schedule.h_start_mult), T(schedule.h_end_mult), T(schedule.tau))
     icT = initial_conditions === nothing ? nothing : T.(initial_conditions)
 
-    ClimateConfig{T}(T(dt), steps, icT, samples_per_epoch, rng, loss_mode, pdfT, schedT)
+    ClimateConfig{T}(T(dt), steps, icT, samples_per_epoch, rng, loss_mode, pdfT, schedT, max(batch_size, 0))
 end
 
 
@@ -202,7 +205,8 @@ Unified training for mean, std, and 3D PDF statistics. Selects appropriate loss 
 - For mean/std: uses cfg.loss_mode (:sse, :mse, etc.)
 - For PDF: uses pdf_loss_mode (:kl, :cross_entropy, :wasserstein)
 - target: NamedTuple for mean/std, NamedTuple with :centers and :p3d for PDF
-Returns (params, loss_history, final_statistics, stats_history)
+- timing=true: collect per-epoch runtime stats and a per-section breakdown (also returned in the result)
+Returns NamedTuple with fields `params`, `loss_history`, `final_statistics`, `stats_history`, `param_history`, and `timing`.
 
 For profiling, wrap calls with Julia's profiler, e.g. `Profile.clear(); Profile.@profile train_statistics(...)`.
 """
@@ -222,6 +226,7 @@ function train_statistics(
     gradient_verbose::Bool=false,
     refresh::Int=10,
     gradient_clip_norm::Float64 = 1.0,
+    timing::Bool=false,
 )
     # Type Promotion and Configuration 
     #(Promotes types for all relevant variables to ensure consistency, Creates a type-stable ClimateConfig object for the training run.)
@@ -248,6 +253,7 @@ function train_statistics(
         steps = cfg.steps,
         initial_conditions = (cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
         samples_per_epoch = cfg.samples_per_epoch,
+        batch_size = cfg.batch_size,
         rng = cfg.rng,
         loss_mode = cfg.loss_mode,
         pdf = pdfT,
@@ -305,6 +311,9 @@ function train_statistics(
     stats_history = Vector{Any}(undef, epochs)
     param_history = Vector{Any}(undef, epochs)
     best_loss = Inf; best_params = nothing; patience_counter = 0; actual_epochs = 0
+    timing_enabled = timing
+    epoch_times = timing_enabled ? Vector{Float64}(undef, epochs) : Float64[]
+    section_times = timing_enabled ? Dict{Symbol,Float64}() : Dict{Symbol,Float64}()
 
     # Initial stratified indices (Generates initial stratified time indices for sampling during training.)
     k = min(cfgT.samples_per_epoch, cfgT.steps)
@@ -327,6 +336,8 @@ function train_statistics(
     # Main training loop
     for epoch in 1:epochs
 
+        epoch_start_ns = timing_enabled ? time_ns() : 0
+
         # --- prepare stratified time indices for this epoch ---
         #k = min(cfgT.samples_per_epoch, cfgT.steps); @assert k > 0
         k = min(cfgT.samples_per_epoch, cfgT.steps)
@@ -339,12 +350,20 @@ function train_statistics(
         if epoch == 1 || (epoch % refresh == 1)
             I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
         end
-        
+        print_epoch = verbose && (epoch == 1 || epoch % refresh == 0)
+
         # --- extract current params and epoch settings ---
         σ,ρ,β = pstate.σ[1], pstate.ρ[1], pstate.β[1]
         x_s,y_s,z_s,θ = pstate.x_s[1], pstate.y_s[1], pstate.z_s[1], pstate.θ[1]
         U_epoch = (cfgT.initial_conditions === nothing) ? reshape(T.(base_u0T),3,1) : T.(cfgT.initial_conditions)
         dt_epoch, steps_epoch = cfgT.dt, cfgT.steps
+        B = size(U_epoch, 2)
+        B == 0 && error("cfg.initial_conditions must supply at least one column for batching.")
+        batch_cols = cfgT.batch_size <= 0 ? B : clamp(cfgT.batch_size, 1, B)
+        idx_order = collect(1:B)
+        if batch_cols < B
+            Random.shuffle!(cfgT.rng, idx_order)
+        end
 
         if is_pdf
             # ---- bandwidth annealing (smooth → sharp) ----
@@ -354,69 +373,115 @@ function train_statistics(
             h_end   = sched.h_end_mult   * Δ
             τ       = sched.tau
             h_curr  = h_end + (h_start - h_end) * exp(-T(epoch)/τ)
-            # --- compute loss and gradients ---
-            # Use a named helper so profiling shows a stable frame instead of an anonymous closure.
-            L = _loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
-                     dt_epoch, steps_epoch, U_epoch, I,
-                     centers, h_curr,                    # <— here
-                     p3d_tgt,
-                     pdf_mode, sinkεT, cfgT.pdf.sinkhorn_iters)
+            grad_acc = _zero_grad_state(pstate)
+            loss_acc = zero(T)
+            weight_acc = zero(T)
 
-            # Stores the computed loss for the current epoch.
-            losses[epoch] = L
-            # Computes gradients using Enzyme's automatic differentiation for the loss_entry_pdf3d function.
-            gtuple = Enzyme.autodiff(
-                Enzyme.set_runtime_activity(Enzyme.Reverse),
-                _loss_entry_pdf3d,
-                Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
-                Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
-                Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
-                Enzyme.Const(U_epoch), Enzyme.Const(I),
-                Enzyme.Const(centers), Enzyme.Const(h_curr),  # <- was hT
-                Enzyme.Const(p3d_tgt),
-                Enzyme.Const(pdf_mode), Enzyme.Const(sinkεT), Enzyme.Const(cfgT.pdf.sinkhorn_iters),
-            )
-            # Flattens the gradient tuple returned by Enzyme into a plain tuple for easier manipulation.
-            g = _flatten_grads(gtuple)
-            # Constructs a gradient state NamedTuple from the flattened gradients.
-            gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
-                          x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
-            # Applies the update mask to the gradient state to zero out gradients for parameters not being updated.
-            gstate = _mask_grads(gstate_all, update_mask)
-            # Verbose output (Displays gradient information if verbose mode is enabled.)
+            # --- compute loss and gradients over micro-batches ---
+            # (accumulate gradients over batches to simulate full-batch training)
+            for start in 1:batch_cols:B
+                stop = min(start + batch_cols - 1, B)
+                cols = idx_order[start:stop]
+                U_batch = @view U_epoch[:, cols]
+                t_loss_ns = timing_enabled ? time_ns() : 0
+                L = _loss_entry_pdf3d(σ,ρ,β,x_s,y_s,z_s,θ,
+                         dt_epoch, steps_epoch, U_batch, I,
+                         centers, h_curr,
+                         p3d_tgt,
+                         pdf_mode, sinkεT, cfgT.pdf.sinkhorn_iters)
+                if timing_enabled
+                    _timing_add!(section_times, :loss_eval, (time_ns() - t_loss_ns) * 1.0e-9)
+                end
+                t_grad_ns = timing_enabled ? time_ns() : 0
+                gtuple = Enzyme.autodiff(
+                    Enzyme.set_runtime_activity(Enzyme.Reverse),
+                    _loss_entry_pdf3d,
+                    Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
+                    Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
+                    Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
+                    Enzyme.Const(U_batch), Enzyme.Const(I),
+                    Enzyme.Const(centers), Enzyme.Const(h_curr),
+                    Enzyme.Const(p3d_tgt),
+                    Enzyme.Const(pdf_mode), Enzyme.Const(sinkεT), Enzyme.Const(cfgT.pdf.sinkhorn_iters),
+                )
+                if timing_enabled
+                    _timing_add!(section_times, :autodiff, (time_ns() - t_grad_ns) * 1.0e-9)
+                end
+                g = _flatten_grads(gtuple)
+                gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
+                              x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
+                gstate = _mask_grads(gstate_all, update_mask)
+                batch_weight = T(length(cols))
+                loss_acc += L * batch_weight
+                weight_acc += batch_weight
+                _accumulate_grad_state!(grad_acc, gstate, batch_weight)
+            end
+            weight_acc == zero(T) && error("Encountered empty batch while accumulating gradients.")
+            losses[epoch] = loss_acc / weight_acc
+            gstate = _scale_grad_state!(grad_acc, one(T) / weight_acc)
             gradient_verbose && @show gstate
 
-            # clip exploding gradients before optimizer update
             gnorm_before = _gradnorm(gstate)
             if gnorm_before > gradient_clip_norm
-                verbose && @printf("  Gradients clipped (norm %.3e > %.2f)\n", gnorm_before, gradient_clip_norm)
+                print_epoch && @printf("  Gradients clipped (norm %.3e > %.2f)\n", gnorm_before, gradient_clip_norm)
             end
-            gstate = _clip_grads(gstate, gradient_clip_norm)  # threshold = 1.0 (tune as needed)
-            
+
+            gstate = _clip_grads(gstate, gradient_clip_norm)
+
             old = _from_state(pstate)  # copy before update
+            t_update_ns = timing_enabled ? time_ns() : 0
             ost, pstate = Optimisers.update!(ost, pstate, gstate)
+
+            if timing_enabled
+                _timing_add!(section_times, :optimizer_update, (time_ns() - t_update_ns) * 1.0e-9)
+            end
             new = _from_state(pstate)
 
-            verbose && @printf("Epoch %4d | σ=%.6f (Δ%.2e)  ρ=%.6f (Δ%.2e)  β=%.6f (Δ%.2e)  | loss=%.6e | g_norm=%.3e\n",epoch,new.σ, new.σ - old.σ,new.ρ, new.ρ - old.ρ,new.β, new.β - old.β, L, _gradnorm(gstate))
+            if print_epoch
+                @printf("Epoch %4d | σ=%.6f (Δ%.2e)  ρ=%.6f (Δ%.2e)  β=%.6f (Δ%.2e)  | loss=%.6e | g_norm=%.3e\n",
+                        epoch, new.σ, new.σ - old.σ, new.ρ, new.ρ - old.ρ, new.β, new.β - old.β,
+                        losses[epoch], _gradnorm(gstate))
+            end
         else
-            # Same idea: rely on a top-level helper for profiling readability.
             loss_mode_sym = cfgT.loss_mode
-            L = _loss_entry_stats(σ, ρ, β, x_s, y_s, z_s, θ,
-                        dt_epoch, steps_epoch, U_epoch, target_vec, I, stats_tuple, loss_mode_sym)
-            losses[epoch] = L
-            gtuple = Enzyme.autodiff(
-                Enzyme.set_runtime_activity(Enzyme.Reverse),
-                _loss_entry_stats,
-                Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
-                Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
-                Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
-                Enzyme.Const(U_epoch), Enzyme.Const(target_vec), Enzyme.Const(I),
-                Enzyme.Const(stats_tuple), Enzyme.Const(loss_mode_sym),
-            )
-            g = _flatten_grads(gtuple)
-            gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
-                          x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
-            gstate = _mask_grads(gstate_all, update_mask)
+            grad_acc = _zero_grad_state(pstate)
+            loss_acc = zero(T)
+            weight_acc = zero(T)
+            for start in 1:batch_cols:B
+                stop = min(start + batch_cols - 1, B)
+                cols = idx_order[start:stop]
+                U_batch = @view U_epoch[:, cols]
+                t_loss_ns = timing_enabled ? time_ns() : 0
+                L = _loss_entry_stats(σ, ρ, β, x_s, y_s, z_s, θ,
+                            dt_epoch, steps_epoch, U_batch, target_vec, I, stats_tuple, loss_mode_sym)
+                if timing_enabled
+                    _timing_add!(section_times, :loss_eval, (time_ns() - t_loss_ns) * 1.0e-9)
+                end
+                t_grad_ns = timing_enabled ? time_ns() : 0
+                gtuple = Enzyme.autodiff(
+                    Enzyme.set_runtime_activity(Enzyme.Reverse),
+                    _loss_entry_stats,
+                    Enzyme.Active(σ), Enzyme.Active(ρ), Enzyme.Active(β),
+                    Enzyme.Active(x_s), Enzyme.Active(y_s), Enzyme.Active(z_s), Enzyme.Active(θ),
+                    Enzyme.Const(dt_epoch), Enzyme.Const(steps_epoch),
+                    Enzyme.Const(U_batch), Enzyme.Const(target_vec), Enzyme.Const(I),
+                    Enzyme.Const(stats_tuple), Enzyme.Const(loss_mode_sym),
+                )
+                if timing_enabled
+                    _timing_add!(section_times, :autodiff, (time_ns() - t_grad_ns) * 1.0e-9)
+                end
+                g = _flatten_grads(gtuple)
+                gstate_all = (σ=[T(g[1])], ρ=[T(g[2])], β=[T(g[3])],
+                              x_s=[T(g[4])], y_s=[T(g[5])], z_s=[T(g[6])], θ=[T(g[7])])
+                gstate = _mask_grads(gstate_all, update_mask)
+                batch_weight = T(length(cols))
+                loss_acc += L * batch_weight
+                weight_acc += batch_weight
+                _accumulate_grad_state!(grad_acc, gstate, batch_weight)
+            end
+            weight_acc == zero(T) && error("Encountered empty batch while accumulating gradients.")
+            losses[epoch] = loss_acc / weight_acc
+            gstate = _scale_grad_state!(grad_acc, one(T) / weight_acc)
             if gradient_verbose
                 println("--- Gradient for epoch ", epoch, " ---")
                 println("gstate (parameter gradients):")
@@ -425,19 +490,25 @@ function train_statistics(
                 end
                 println("-----------------------------")
             end
-            # clip exploding gradients before optimizer update
             gnorm_before = _gradnorm(gstate)
             if gnorm_before > gradient_clip_norm
-                verbose && @printf("  Gradients clipped (norm %.3e > %.2f)\n", gnorm_before, gradient_clip_norm)
+                print_epoch && @printf("  Gradients clipped (norm %.3e > %.2f)\n", gnorm_before, gradient_clip_norm)
             end
-            gstate = _clip_grads(gstate, gradient_clip_norm)  # threshold = 1.0 (tune as needed)
+            gstate = _clip_grads(gstate, gradient_clip_norm)
+            t_update_ns = timing_enabled ? time_ns() : 0
             ost, pstate = Optimisers.update!(ost, pstate, gstate)
-            verbose && @printf("Epoch %4d | loss = %.6e | g_norm = %.3e | %s\n",
-                    epoch, L, _gradnorm(gstate), _fmt_params(pstate))
+            if timing_enabled
+                _timing_add!(section_times, :optimizer_update, (time_ns() - t_update_ns) * 1.0e-9)
+            end
+            if print_epoch
+                @printf("Epoch %4d | loss = %.6e | g_norm = %.3e | %s\n",
+                        epoch, losses[epoch], _gradnorm(gstate), _fmt_params(pstate))
+            end
         end
 
         # --- record statistics for this epoch (full trajectory) ---
         cur_params = _from_state(pstate)
+        t_stats_ns = timing_enabled ? time_ns() : 0
         if is_pdf
             stats_history[epoch] = (; pdf3d = _compute_pdf3d_statistic(cur_params, cfgT, base_u0T, cfgT.pdf.centers, h_curr, I))
             param_history[epoch] = cur_params
@@ -445,20 +516,29 @@ function train_statistics(
             stats_history[epoch] = evaluate_statistics(cur_params; cfg=cfgT, base_u0=base_u0T,stats=stats_tuple, full_trajectory=true)
             param_history[epoch] = cur_params
         end
+        if timing_enabled
+            _timing_add!(section_times, :stats_eval, (time_ns() - t_stats_ns) * 1.0e-9)
+        end
+        if timing_enabled
+            epoch_times[epoch] = (time_ns() - epoch_start_ns) * 1.0e-9
+        end
+
+        actual_epochs = epoch
 
         # --- early stopping (absolute OR relative improvement) ---
         # treat the very first valid loss as an improvement
-        is_valid = isfinite(L)
+        L_epoch = losses[epoch]
+        is_valid = isfinite(L_epoch)
 
         if best_loss == Inf
             improved = is_valid
         else
             thresh = max(early_stopping_min_delta, rel_delta * abs(best_loss))
-            improved = is_valid && (best_loss - L) > thresh
+            improved = is_valid && (best_loss - L_epoch) > thresh
         end
 
         if improved
-            best_loss = L
+            best_loss = L_epoch
             best_params = deepcopy(cur_params)
             patience_counter = 0
         else
@@ -469,8 +549,6 @@ function train_statistics(
             verbose && @printf("Early stopping at epoch %d | best_loss = %.6e\n", epoch, best_loss)
             break
         end
-
-        actual_epochs += 1
     end
 
     # Truncate arrays to actual number of completed epochs
@@ -488,7 +566,34 @@ function train_statistics(
     else
         final_stats  = evaluate_statistics(final_params; cfg=cfgT, base_u0=base_u0T, stats=stats_tuple, full_trajectory=true)
     end
-    return (params=final_params, loss_history=losses, final_statistics=final_stats, stats_history=stats_history, param_history=param_history)
+
+    timing_report = nothing
+    if timing_enabled
+        epoch_times_run = epoch_times[1:actual_epochs]
+        total_time = sum(epoch_times_run)
+        mean_epoch_time = actual_epochs > 0 ? total_time / actual_epochs : 0.0
+        per_section = Dict{Symbol,Float64}()
+        for (k, v) in section_times
+            per_section[k] = v
+        end
+        timing_report = (
+            total_time = total_time,
+            mean_epoch = mean_epoch_time,
+            epoch_times = epoch_times_run,
+            per_section = per_section,
+        )
+        if verbose
+            @printf("Timing | total %.3fs | mean %.3fs over %d epochs\n",
+                    total_time, mean_epoch_time, actual_epochs)
+            if !isempty(per_section)
+                for (name, seconds) in sort(collect(per_section); by = x -> -x[2])
+                    @printf("Timing | %-18s %.3fs\n", String(name), seconds)
+                end
+            end
+        end
+    end
+    return (params=final_params, loss_history=losses, final_statistics=final_stats,
+            stats_history=stats_history, param_history=param_history, timing=timing_report)
 end
 
 const DEFAULT_MASK = (σ=true, ρ=true, β=true, x_s=false, y_s=false, z_s=false, θ=false)
@@ -527,6 +632,46 @@ end
 
 @inline function _gradnorm(g)
     sqrt(g.σ[1]^2 + g.ρ[1]^2 + g.β[1]^2 + g.x_s[1]^2 + g.y_s[1]^2 + g.z_s[1]^2 + g.θ[1]^2)
+end
+
+@inline function _zero_grad_state(state)
+    fillzero(x) = fill!(similar(x), zero(eltype(x)))
+    (σ = fillzero(state.σ),
+     ρ = fillzero(state.ρ),
+     β = fillzero(state.β),
+     x_s = fillzero(state.x_s),
+     y_s = fillzero(state.y_s),
+     z_s = fillzero(state.z_s),
+     θ = fillzero(state.θ))
+end
+
+@inline function _accumulate_grad_state!(acc, g, weight::Real)
+    w = convert(eltype(acc.σ), weight)
+    acc.σ[1] += w * g.σ[1]
+    acc.ρ[1] += w * g.ρ[1]
+    acc.β[1] += w * g.β[1]
+    acc.x_s[1] += w * g.x_s[1]
+    acc.y_s[1] += w * g.y_s[1]
+    acc.z_s[1] += w * g.z_s[1]
+    acc.θ[1] += w * g.θ[1]
+    return acc
+end
+
+@inline function _scale_grad_state!(g, scale::Real)
+    s = convert(eltype(g.σ), scale)
+    g.σ[1] *= s
+    g.ρ[1] *= s
+    g.β[1] *= s
+    g.x_s[1] *= s
+    g.y_s[1] *= s
+    g.z_s[1] *= s
+    g.θ[1] *= s
+    return g
+end
+
+@inline function _timing_add!(acc::Dict{Symbol,Float64}, key::Symbol, seconds::Float64)
+    acc[key] = get(acc, key, 0.0) + seconds
+    return acc
 end
 
 # Enzyme gradient tuple → plain tuple
@@ -871,15 +1016,22 @@ function evaluate_statistics(params::L63Parameters;
         T(cfg.pdf.sinkhorn_ε),
         cfg.pdf.sinkhorn_iters
     )
+    schedT = PdfSchedule{T}(
+        T(cfg.schedule.h_start_mult),
+        T(cfg.schedule.h_end_mult),
+        T(cfg.schedule.tau)
+    )
 
     cfgT = ClimateConfig(T;
         dt = T(cfg.dt),
         steps = cfg.steps,
         initial_conditions = (cfg.initial_conditions === nothing ? nothing : T.(cfg.initial_conditions)),
         samples_per_epoch = cfg.samples_per_epoch,
+        batch_size = cfg.batch_size,
         rng = cfg.rng,
         loss_mode = cfg.loss_mode,
-        pdf = pdfT,   # schedule defaults to PdfSchedule(T)
+        pdf = pdfT,
+        schedule = schedT,
     )
     base_u0T = T.(base_u0)
 
@@ -935,7 +1087,7 @@ end
 end
 
 """
-# fast soft histogram: only visit bins within ±R of nearest center (uniform grid assumed)
+    fast soft histogram: only visit bins within ±R of nearest center (uniform grid assumed)
 function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::AbstractVector{T},
                             centers::AbstractVector{T}, h::T, out::AbstractVector{T};
                             R::Int = 3) where {T}
@@ -1007,7 +1159,7 @@ end"""
         jL = max(1, iy0 - R); jH = min(m, iy0 + R)
         kL = max(1, iz0 - R); kH = min(m, iz0 + R)
 
-        # 1-D Gaussian weights (separable kernel) → only O(R) exp calls per axis
+        # 1-D Gaussian weights (separable kernel) → only O(R) exp calls per axis, instead of O(R^3)
         ex = Vector{T}(undef, iH - iL + 1)
         ey = Vector{T}(undef, jH - jL + 1)
         ez = Vector{T}(undef, kH - kL + 1)
