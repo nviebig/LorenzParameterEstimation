@@ -45,6 +45,7 @@ using StatsBase
 using Base.Threads: @threads, nthreads, threadid
 using Printf: @printf, @sprintf
 
+
 # Optional Checkpointing.jl integration (reduces Enzyme reverse-mode replay cost)
 const _HAVE_CHECKPOINTING = let
     try
@@ -67,25 +68,26 @@ import ..LorenzParameterEstimation
 using  ..LorenzParameterEstimation: L63Parameters, integrate
 
 
-export train_climate, evaluate_statistics, ClimateConfig, train_statistics,soft_hist_3d, make_pdf_config, hard_hist_3d, soft_hist_3d_local, PdfSchedule
+export train_climate, evaluate_statistics, ClimateConfig, train_statistics,soft_hist_3d, make_pdf_config, hard_hist_3d, soft_hist_3d_local, PdfSchedule, PdfConfig,train_pdf_with_grid
+
 # ================================
 # Configuration
 # ================================
 
 # PDF configuration for 3D histograms
 Base.@kwdef struct PdfConfig{T}
-    centers::Vector{T}
-    bandwidth::T
-    loss_mode::Symbol
-    sinkhorn_ε::T
-    sinkhorn_iters::Int
+    centers::Vector{T}              # The 1-D bin centers used for x, y, and z (same grid for all three). If length = m, your PDF has m^3 bins, flattened as (i-1)*m*m + (j-1)*m + k.
+    bandwidth::T                    # The Gaussian kernel width h used by the soft histogram. On a uniform grid with spacing Δ, a common choice is h = h_mult * Δ (e.g., h_mult ≈ 0.7–1.5). Bigger h → smoother PDF.
+    loss_mode::Symbol               # One of :kl, :cross_entropy, or :wasserstein
+    sinkhorn_ε::T                   # Entropic regularization parameter ε for Sinkhorn approximation of Wasserstein distance
+    sinkhorn_iters::Int             # Number of Sinkhorn iterations to perform
 end
 
 # convenience “default” constructor for a given T, controlls the smooth to sharp transition
 struct PdfSchedule{T}
-    h_start_mult::T
+    h_start_mult::T     # Define h_start = h_start_mult * Δ and h_end = h_end_mult * Δ.
     h_end_mult::T
-    tau::T
+    tau::T              #Exponential time constant for decay: h(epoch) = h_end + (h_start - h_end) * exp(-epoch / tau), Set h_start_mult == h_end_mult == h_mult (any tau then has no effect).
 end
 
 # convenience “default” constructor for a given T
@@ -318,8 +320,8 @@ function train_statistics(
 
     # Initial stratified indices (Generates initial stratified time indices for sampling during training.)
     k = min(cfgT.samples_per_epoch, cfgT.steps)
-    I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
-
+    I = jittered_grid_burnin(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps);
+                             burn=0.3, jitter=0.35)
     # Verbose output (Displays initial training configuration details if verbose mode is enabled.)
     # Note: `epoch` is not defined yet here (pre-loop). Print initial info when verbose is true.
     if verbose
@@ -349,7 +351,8 @@ function train_statistics(
         end"""
 
         if epoch == 1 || (epoch % refresh == 1)
-            I = stratified_indices(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps))
+            I = jittered_grid_burnin(cfgT.rng, cfgT.steps, min(cfgT.samples_per_epoch, cfgT.steps);
+                             burn=0.3, jitter=0.35)
         end
         print_epoch = verbose && (epoch == 1 || epoch % refresh == 0)
 
@@ -362,6 +365,7 @@ function train_statistics(
         B == 0 && error("cfg.initial_conditions must supply at least one column for batching.")
         batch_cols = cfgT.batch_size <= 0 ? B : clamp(cfgT.batch_size, 1, B)
         idx_order = collect(1:B)
+        
         if batch_cols < B
             Random.shuffle!(cfgT.rng, idx_order)
         end
@@ -492,6 +496,7 @@ function train_statistics(
 
             old = _from_state(pstate)  # copy before update
             t_update_ns = timing_enabled ? time_ns() : 0
+            
             ost, pstate = Optimisers.update!(ost, pstate, gstate)
 
             if timing_enabled
@@ -628,7 +633,9 @@ function train_statistics(
         cur_params = _from_state(pstate)
         t_stats_ns = timing_enabled ? time_ns() : 0
         if is_pdf
-            stats_history[epoch] = (; pdf3d = _compute_pdf3d_statistic(cur_params, cfgT, base_u0T, cfgT.pdf.centers, h_curr, I))
+            # inside is_pdf branch when recording stats_history
+            stats_history[epoch] = (; pdf3d = _compute_pdf3d_statistic_soft(cur_params, cfgT, base_u0T,
+                                                                cfgT.pdf.centers, h_curr, I))
             param_history[epoch] = cur_params
         else
             stats_history[epoch] = evaluate_statistics(cur_params; cfg=cfgT, base_u0=base_u0T,stats=stats_tuple, full_trajectory=true)
@@ -1173,6 +1180,7 @@ end
 # ================================
 
 # --- 3D soft histogram (Gaussian kernel) -------------------------------------
+"""
 @inline function soft_hist_3d(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::AbstractVector{T},
                              centers::AbstractVector{T}, h::T, out::AbstractVector{T}) where {T}
     m = length(centers)
@@ -1204,9 +1212,9 @@ end
     return nothing
 end
 
-"""
     fast soft histogram: only visit bins within ±R of nearest center (uniform grid assumed)
-function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::AbstractVector{T},
+
+    function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::AbstractVector{T},
                             centers::AbstractVector{T}, h::T, out::AbstractVector{T};
                             R::Int = 3) where {T}
     m = length(centers); @assert length(out) == m*m*m
@@ -1252,10 +1260,9 @@ function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::Ab
     return nothing
 end"""
 
-# --- Drop-in faster kernel (separable Gaussian) ------------------------------
 @inline function soft_hist_3d_local(xs::AbstractVector{T}, ys::AbstractVector{T}, zs::AbstractVector{T},
-                                         centers::AbstractVector{T}, h::T, out::AbstractVector{T};
-                                         R::Int = 3) where {T}
+                                    centers::AbstractVector{T}, h::T, out::AbstractVector{T};
+                                    R::Int = 3) where {T}
     @assert length(out) == length(centers)^3
     fill!(out, zero(T))
 
@@ -1264,8 +1271,9 @@ end"""
     invΔ   = one(T) / Δ
     inv2h2 = one(T) / (2*h*h)
     him1   = m - 1
+
     @inbounds @fastmath for s in eachindex(xs)
-        # map sample -> nearest center indices (clamped)
+        # nearest indices (clamped)
         posx = (xs[s] - centers[1]) * invΔ; posx = isfinite(posx) ? clamp(posx, zero(T), T(him1)) : (posx > zero(T) ? T(him1) : zero(T))
         posy = (ys[s] - centers[1]) * invΔ; posy = isfinite(posy) ? clamp(posy, zero(T), T(him1)) : (posy > zero(T) ? T(him1) : zero(T))
         posz = (zs[s] - centers[1]) * invΔ; posz = isfinite(posz) ? clamp(posz, zero(T), T(him1)) : (posz > zero(T) ? T(him1) : zero(T))
@@ -1277,7 +1285,7 @@ end"""
         jL = max(1, iy0 - R); jH = min(m, iy0 + R)
         kL = max(1, iz0 - R); kH = min(m, iz0 + R)
 
-        # 1-D Gaussian weights (separable kernel) → only O(R) exp calls per axis, instead of O(R^3)
+        # separable 1-D Gaussians
         ex = Vector{T}(undef, iH - iL + 1)
         ey = Vector{T}(undef, jH - jL + 1)
         ez = Vector{T}(undef, kH - kL + 1)
@@ -1285,25 +1293,95 @@ end"""
         @inbounds @fastmath for j in eachindex(ey);  dy = ys[s] - centers[jL + j - 1];  ey[j] = exp(-(dy*dy) * inv2h2); end
         @inbounds @fastmath for k in eachindex(ez);  dz = zs[s] - centers[kL + k - 1];  ez[k] = exp(-(dz*dz) * inv2h2); end
 
-        # accumulate outer products ex ⊗ ey ⊗ ez into the flattened 3-D block
-        @inbounds @simd for ii in 0:(length(ex)-1)
-            base_i = (iL + ii - 1) * m * m
-            wi = ex[ii+1]
+        # accumulate with Julia’s linear index: i + (j-1)m + (k-1)m^2
+        @inbounds @simd for kk in 0:(length(ez)-1)
+            wk = ez[kk+1]
+            k  = kL + kk
+            base_k = (k-1) * m * m
             @simd for jj in 0:(length(ey)-1)
-                base_ij = base_i + (jL + jj - 1) * m
-                wij = wi * ey[jj+1]
-                @simd for kk in 0:(length(ez)-1)
-                    out[base_ij + (kL + kk)] += wij * ez[kk+1]
+                wkj = wk * ey[jj+1]
+                j   = jL + jj
+                base_kj = base_k + (j-1) * m
+                @simd for ii in 0:(length(ex)-1)
+                    i = iL + ii
+                    idx = base_kj + i                 # <-- key change
+                    out[idx] += wkj * ex[ii+1]
                 end
             end
         end
     end
-    # normalize
+
     s = sum(out)
     if s > eps(T); @inbounds out ./= s
     else;          @inbounds fill!(out, one(T)/length(out))
     end
     return nothing
+end
+
+
+# Soft-PDF statistic using the SAME kernel/bandwidth as training
+function _compute_pdf3d_statistic_soft(params::L63Parameters{S},
+                                       cfg::ClimateConfig{S},
+                                       base_u0::AbstractVector{S},
+                                       centers::AbstractVector{S},
+                                       h::S,
+                                       I::AbstractVector{Int}) where {S<:Real}
+
+    # ICs
+    U = cfg.initial_conditions === nothing ? reshape(S.(base_u0), 3, 1) : S.(cfg.initial_conditions)
+    _assert_ics(U)
+
+    # Params
+    p = L63Parameters(S(params.σ), S(params.ρ), S(params.β),
+                      S(params.x_s), S(params.y_s), S(params.z_s), S(params.θ))
+
+    B = size(U, 2)
+    k = length(I)
+    m = length(centers)
+    n = m*m*m
+    Δ = (centers[end] - centers[1]) / (m - 1)
+    R = max(1, ceil(Int, 3h / Δ))
+
+    # Accumulate PDFs across ICs (average of PDFs, not pooled samples)
+    p3d_acc = zeros(S, n)
+
+    @inbounds for b in 1:B
+        # integrate IC b and sample at I
+        u   = copy(@view U[:, b])
+        k1  = similar(u); k2 = similar(u); k3 = similar(u); k4 = similar(u)
+        tmp = similar(u)
+        xs = Vector{S}(undef, k); ys = similar(xs); zs = similar(xs)
+
+        trow = 1; idxp = 1; nextI = I[idxp]; idx = 1
+        for _ in 1:cfg.steps
+            rk4_step!(u, p, cfg.dt, k1, k2, k3, k4, tmp)
+            trow += 1
+            if trow == nextI
+                xs[idx] = u[1]; ys[idx] = u[2]; zs[idx] = u[3]
+                idx += 1
+                idxp += 1
+                idxp <= k && (nextI = I[idxp])
+            end
+        end
+
+        # soft histogram for this IC
+        p3d_tmp = zeros(S, n)
+        soft_hist_3d_local(xs, ys, zs, centers, h, p3d_tmp; R=R)
+        p3d_acc .+= p3d_tmp
+    end
+
+    # average over ICs and normalize (just in case)
+    if B > 0
+        p3d_acc ./= S(B)
+    end
+    s = sum(p3d_acc)
+    if s > eps(S)
+        p3d_acc ./= s
+    else
+        fill!(p3d_acc, one(S)/length(p3d_acc))
+    end
+
+    return (; centers=centers, p3d=p3d_acc)
 end
 
 
@@ -1335,7 +1413,8 @@ end
         i = clamp(searchsortedlast(edges, xs[s]), 1, m)
         j = clamp(searchsortedlast(edges, ys[s]), 1, m)
         k = clamp(searchsortedlast(edges, zs[s]), 1, m)
-        out[(i-1)*m*m + (j-1)*m + k] += one(T)
+        idx = i + (j-1)*m + (k-1)*m*m
+        out[idx] += 1
     end
 
     s = sum(out)
@@ -1416,7 +1495,7 @@ function _sinkhorn_wasserstein_nd(p::AbstractVector{T}, q::AbstractVector{T},
     return acc
 end
 
-# --- 3D pdf loss core (Enzyme-friendly) --------------------------------------
+# --- 3D pdf loss core (Enzyme-friendly), per-IC loss averaging ---------------
 function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,         # 7 trainable scalars
                            dt::S, steps::Int,                 # integrator controls
                            U::AbstractMatrix{S},              # 3×B initial conditions (columns)
@@ -1426,52 +1505,29 @@ function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,         # 7 trainable 
                            p3d_tgt::AbstractVector{S},        # target pdf (length m^3), normalized
                            loss_mode::Symbol,                 # :kl, :cross_entropy, :wasserstein
                            sink_ε::S, sink_iters::Int)::S where {S<:Real}
-    
-    # integrate each IC once for 'steps', sample at I, build 3D pdf, compute loss vs target pdf
+
     p = L63Parameters(S(σ),S(ρ),S(β),S(x_s),S(y_s),S(z_s),S(θ))
-    B = size(U,2)       # number of initial conditions
-    k = length(I)       # number of sampled time indices
-    nx = k*B            # total sampled points
-    xs = Vector{S}(undef, nx); ys = similar(xs); zs = similar(xs)
-    idx = 1
-    
-    # for each inital condition, integrate and sample at I
+    B, k = size(U,2), length(I)
+    xs = Vector{S}(undef, B*k); ys = similar(xs); zs = similar(xs)
+    pos = 1
     @inbounds for b in 1:B
-        # current state
         u   = copy(@view U[:,b])
-        # intermediate steps
-        k1  = similar(u); 
-        k2 = similar(u); 
-        k3 = similar(u); 
-        k4 = similar(u)
-        # temporary storage
-        tmp = similar(u)
-        # time row tracking
+        k1 = similar(u); k2 = similar(u); k3 = similar(u); k4 = similar(u); tmp = similar(u)
         trow = 1; idxp = 1; nextI = I[idxp]
-        # integrate and sample
-        @maybe_checkpoint begin
-            for _ in 1:steps
-                rk4_step!(u, p, dt, k1, k2, k3, k4, tmp)
-                trow += 1
-                if trow == nextI
-                    xs[idx] = u[1]; ys[idx] = u[2]; zs[idx] = u[3]
-                    idx += 1
-                    idxp += 1
-                    idxp <= k && (nextI = I[idxp])
-                end
+        for _ in 1:steps
+            rk4_step!(u, p, dt, k1, k2, k3, k4, tmp)
+            trow += 1
+            if trow == nextI
+                xs[pos] = u[1]; ys[pos] = u[2]; zs[pos] = u[3]
+                pos += 1
+                idxp += 1
+                idxp <= k && (nextI = I[idxp])
             end
         end
     end
-    # Compute the 3D PDF
-    m = length(centers)
-    n = m*m*m
-    p3d = Vector{S}(undef, n)
-    # Differentiable surrogate for training
-    # soft_hist_3d(xs, ys, zs, centers, h, p3d)  # old
-    R = max(1, ceil(Int, 3h / ((centers[end]-centers[1])/(length(centers)-1))))
-    soft_hist_3d_local(xs, ys, zs, centers, h, p3d; R=R)  # new (≈100–1000× faster)
+    m = length(centers); p3d = Vector{S}(undef, m*m*m)
+    soft_hist_3d_local(xs, ys, zs, centers, h, p3d; R=max(1, ceil(Int, 3h / ((centers[end]-centers[1])/(m-1)))))
 
-    # Computes the loss between the predicted and target PDF using the selected mode
     if loss_mode === :cross_entropy
         return _cross_entropy_vec(p3d_tgt, p3d)
     elseif loss_mode === :kl
@@ -1479,7 +1535,7 @@ function _loss_pdf_core_3d(σ, ρ, β, x_s, y_s, z_s, θ,         # 7 trainable 
     elseif loss_mode === :wasserstein
         return _sinkhorn_wasserstein_nd(p3d_tgt, p3d, centers; ε=sink_ε, n_iter=sink_iters)
     else
-        error("Unknown pdf loss mode: $loss_mode, must be :kl, :cross_entropy, or :wasserstein")
+        error("unknown pdf loss")
     end
 end
 

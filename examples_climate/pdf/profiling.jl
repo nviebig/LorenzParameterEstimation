@@ -76,11 +76,3 @@ Profile.@profile begin
     )
 end
 
-
-println("""
-Parameter recovery summary:
-  Initial guess:      $(init_params)
-  Recovered params:   $(res_test.params)
-  Target (goal):      $(base_params_test)
-""")
-
