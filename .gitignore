@@ -20,6 +20,7 @@ summary.txt
 summary_better.txt
 summary_climate.txt
 debug_train.jl
+Manifest.toml
 
 # Julia local depot and profiling caches
 .julia_depot/
