@@ -187,8 +187,8 @@ end
         params = classic_params()
         solution = integrate(params, [1.0, 1.0, 1.0], (0.0, 2.0), 0.01)
         
-        traj_mean = mean(solution.trajectory, dims=1)
-        traj_std = std(solution.trajectory, dims=1)
+        traj_mean = mean(solution.u, dims=1)
+        traj_std = std(solution.u, dims=1)
         
         @test size(traj_mean) == (1, 3)
         @test size(traj_std) == (1, 3)

@@ -128,6 +128,16 @@ function L63System(; params::L63Parameters{T}, u0::AbstractVector{S}, tspan::Tup
     )
 end
 
+# Convenience constructor: sensible defaults for quick construction
+function L63System(params::L63Parameters{T}) where {T<:Real}
+    L63System(
+        params = params,
+        u0     = T[1.0, 1.0, 1.0],
+        tspan  = (T(0.0), T(10.0)),
+        dt     = T(0.01)
+    )
+end
+
 """
     L63Solution{T<:Real}
 

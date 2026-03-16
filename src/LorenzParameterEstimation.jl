@@ -3,15 +3,11 @@ module LorenzParameterEstimation
 # Core types
 export L63Parameters, L63System, L63Solution, L63TrainingConfig
 
-
-# Core functionality  
-export integrate, compute_loss, compute_gradients, compute_gradients_modular, compute_gradients_extended, window_rmse, train!, estimate_parameters
-
-export L63Parameters, L63System, L63Solution, L63TrainingConfig
+# Core functionality
 export integrate, compute_loss, compute_gradients, compute_gradients_modular, compute_gradients_extended, window_rmse, train!, estimate_parameters
 export modular_train!
 export window_linear, window_mae, window_mse, weighted_window_loss, probabilistic_loss, adaptive_loss,
-       huber_loss, mae, mse, huber_enzyme_function, pseudohuber_enzyme_function
+       huber_loss, huber_enzyme_function, pseudohuber_enzyme_function
 export TrainingMetrics, reset_metrics!, record_window_metrics!, record_batch_metrics!, 
        record_epoch_metrics!, compute_gradient_statistics, compute_gradients_with_tracking
 export OptimizerConfig

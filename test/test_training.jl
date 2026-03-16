@@ -24,9 +24,9 @@
         @test history isa NamedTuple
         
         # Should have improved from initial guess
-        initial_loss = window_rmse(initial_guess, solution, 1, 50)
-        final_loss = window_rmse(best_params, solution, 1, 50)
-        @test final_loss ≤ initial_loss
+        initial_error = parameter_error(initial_guess, true_params)
+        final_error   = parameter_error(best_params,   true_params)
+        @test final_error ≤ initial_error
         
         # History should have correct length
         @test length(history.loss_history) == config.epochs
@@ -163,7 +163,7 @@ end
         @test result.best_params isa L63Parameters
         
         # Should have improved
-        initial_loss = window_rmse(initial_guess, solution, 1, 50)
+        initial_loss = compute_loss(initial_guess, solution, 1, 50)
         final_loss = result.metrics.final_loss
         @test final_loss ≤ initial_loss
     end
@@ -282,8 +282,8 @@ end
         # Add noise to trajectory
         Random.seed!(12345)
         noise_level = 0.1
-        noisy_trajectory = clean_solution.trajectory + noise_level * randn(size(clean_solution.trajectory))
-        noisy_solution = L63Solution(clean_solution.times, noisy_trajectory, clean_solution.system)
+        noisy_trajectory = clean_solution.u + noise_level * randn(size(clean_solution.u))
+        noisy_solution = L63Solution(clean_solution.t, noisy_trajectory, clean_solution.system)
         
         initial_guess = L63Parameters(8.0, 25.0, 2.5)
         

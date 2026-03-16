@@ -34,7 +34,7 @@
         # 5. Test trained parameters by forward simulation
         estimated_solution = integrate(best_params, [1.0, 1.0, 1.0], (0.0, 1.0), 0.01)
         @test estimated_solution isa L63Solution
-        @test all(isfinite.(estimated_solution.trajectory))
+        @test all(isfinite.(estimated_solution.u))
         
         println("   ✅ Basic workflow completed successfully")
     end
@@ -71,7 +71,7 @@
         
         # 5. Test forward prediction
         prediction = integrate(result.best_params, [1.0, 1.0, 1.1], (0.0, 1.0), 0.01)
-        @test all(isfinite.(prediction.trajectory))
+        @test all(isfinite.(prediction.u))
         
         println("   ✅ Modern API workflow completed successfully")
     end
@@ -173,9 +173,9 @@ end
         
         for noise_level in noise_levels
             # Create noisy trajectory
-            noise = noise_level * randn(size(clean_solution.trajectory))
-            noisy_trajectory = clean_solution.trajectory + noise
-            noisy_solution = L63Solution(clean_solution.times, noisy_trajectory, clean_solution.system)
+            noise = noise_level * randn(size(clean_solution.u))
+            noisy_trajectory = clean_solution.u + noise
+            noisy_solution = L63Solution(clean_solution.t, noisy_trajectory, clean_solution.system)
             
             # Estimate parameters
             initial_guess = L63Parameters(8.0, 25.0, 2.5)
@@ -411,7 +411,7 @@ end
         )
         
         # Both should improve from initial guess
-        initial_loss = window_rmse(initial_guess, solution, 1, 30)
+        initial_loss = compute_loss(initial_guess, solution, 1, 30)
         @test metrics_legacy.final_loss ≤ initial_loss
         @test result_modern.metrics.final_loss ≤ initial_loss
         

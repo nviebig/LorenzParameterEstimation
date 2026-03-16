@@ -95,7 +95,7 @@ using Aqua
         
         # Loss computation should be reasonably fast
         solution = integrate(params, u0, (0.0, 0.5), 0.01)
-        @test @elapsed(window_rmse(params, solution, 1, 20)) < 0.1  # Should be very fast
+        @test @elapsed(compute_loss(params, solution, 1, 20)) < 0.1  # Should be very fast
         
         # Gradient computation should be reasonable
         @test @elapsed(compute_gradients_modular(params, solution, 1, 15, window_rmse)) < 1.0
@@ -112,9 +112,9 @@ using Aqua
         
         # Test that repeated loss computations don't allocate excessively
         # (Run once to compile, then measure)
-        window_rmse(params, solution, 1, 15)
+        compute_loss(params, solution, 1, 15)
         
-        allocs_before = @allocated window_rmse(params, solution, 1, 15)
+        allocs_before = @allocated compute_loss(params, solution, 1, 15)
         @test allocs_before < 10000  # Should not allocate too much
         
         # Gradient computation will allocate more, but should be reasonable
@@ -165,7 +165,7 @@ end
         params_chaotic = L63Parameters(10.0, 28.0, 8.0/3.0)
         solution_chaotic = integrate(params_chaotic, [1.0, 1.0, 1.0], (0.0, 2.0), 0.01)
         
-        energies = [sum(solution_chaotic.trajectory[i, :].^2) for i in 1:size(solution_chaotic.trajectory, 1)]
+        energies = [sum(solution_chaotic.u[i, :].^2) for i in 1:size(solution_chaotic.u, 1)]
         energy_diffs = diff(energies)
         
         # Should not have huge jumps (numerical stability)
@@ -224,14 +224,14 @@ end
         solution = integrate(params, [1.0, 1.0, 1.0], (0.0, 1.0), 0.01)
         
         # Window at very beginning
-        @test_nowarn window_rmse(params, solution, 1, 5)
+        @test_nowarn compute_loss(params, solution, 1, 5)
         
         # Window near end (should handle boundaries gracefully)
-        n_points = length(solution.times)
-        @test_nowarn window_rmse(params, solution, n_points - 5, 5)
+        n_points = length(solution.t)
+        @test_nowarn compute_loss(params, solution, n_points - 5, 5)
         
         # Single point window
-        @test_nowarn window_rmse(params, solution, 1, 1)
+        @test_nowarn compute_loss(params, solution, 1, 1)
         
         println("   ✅ Boundary conditions handled correctly")
     end
@@ -250,7 +250,7 @@ end
         
         for extreme_params in extreme_cases
             # Should not crash or produce NaN/Inf
-            loss = window_rmse(extreme_params, solution, 1, 10)
+            loss = compute_loss(extreme_params, solution, 1, 10)
             @test isfinite(loss)
             @test loss ≥ 0
             
@@ -269,15 +269,15 @@ end
         
         # Very short trajectory
         short_solution = integrate(params, [1.0, 1.0, 1.0], (0.0, 0.01), 0.001)
-        @test_nowarn window_rmse(params, short_solution, 1, 1)
-        
+        @test_nowarn compute_loss(params, short_solution, 1, 1)
+
         # Constant trajectory (degenerate case)
         times = collect(0.0:0.01:1.0)
         constant_traj = ones(length(times), 3)  # All ones
         system = L63System(params)
         constant_solution = L63Solution(times, constant_traj, system)
-        
-        @test_nowarn window_rmse(params, constant_solution, 1, 10)
+
+        @test_nowarn compute_loss(params, constant_solution, 1, 10)
         
         println("   ✅ Degenerate cases handled correctly")
     end

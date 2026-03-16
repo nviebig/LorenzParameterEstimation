@@ -109,11 +109,11 @@ end
         
         solution = L63Solution(times, trajectory, system)
         
-        @test solution.times == times
-        @test solution.trajectory == trajectory
+        @test solution.t == times
+        @test solution.u == trajectory
         @test solution.system == system
-        @test size(solution.trajectory) == (4, 3)
-        @test length(solution.times) == size(solution.trajectory, 1)
+        @test size(solution.u) == (4, 3)
+        @test length(solution.t) == size(solution.u, 1)
     end
     
     @testset "Final State" begin
@@ -124,7 +124,7 @@ end
         
         solution = L63Solution(times, trajectory, system)
         @test solution.final_state == [7.0, 8.0, 9.0]
-        @test solution.final_time == 2.0
+        @test solution.t[end] == 2.0
     end
 end
 

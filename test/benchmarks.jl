@@ -127,7 +127,7 @@ using BenchmarkTools
             times = Float64[]
             
             for window_size in window_sizes
-                bench = @benchmark window_rmse($test_params, $solution, 1, $window_size)
+                bench = @benchmark compute_loss($test_params, $solution, 1, $window_size)
                 push!(times, median(bench).time)
                 println("       Window size $window_size median time: $(median(bench).time) ns")
             end
@@ -278,11 +278,11 @@ using BenchmarkTools
             test_params = L63Parameters(9.8, 27.5, 2.7)
             
             # First call to compile
-            window_rmse(test_params, solution, 1, 30)
+            compute_loss(test_params, solution, 1, 30)
             
-            bench_loss = @benchmark window_rmse($test_params, $solution, 1, 30)
+            bench_loss = @benchmark compute_loss($test_params, $solution, 1, 30)
             @test median(bench_loss).memory < 50000  # Should be reasonable
-            println("       window_rmse median allocation: $(median(bench_loss).memory) bytes")
+            println("       compute_loss median allocation: $(median(bench_loss).memory) bytes")
         end
         
         @testset "Gradient Computation Allocations" begin
