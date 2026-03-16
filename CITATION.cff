@@ -1,0 +1,43 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "LorenzParameterEstimation.jl"
+abstract: >
+  A Julia package for parameter estimation in the Lorenz-63 chaotic
+  dynamical system using Enzyme.jl automatic differentiation and modern
+  gradient-based optimizers. Implements windowed trajectory-based loss
+  with teacher forcing to handle chaotic divergence, supporting
+  recovery of the parameters σ, ρ, and β from observed trajectories.
+  Developed as part of a master thesis on gradient-based parameter
+  estimation in chaotic systems.
+authors:
+  - family-names: "Viebig"
+    given-names: "Niklas"
+    email: niklasviebig@gmail.com
+repository-code: "https://github.com/nviebig/LorenzParameterEstimation.jl"
+license: MIT
+version: "0.1.0"
+date-released: "2025-01-01"
+doi: "10.5281/zenodo.19052322"
+keywords:
+  - lorenz-63
+  - parameter estimation
+  - automatic differentiation
+  - julia
+  - chaotic systems
+  - enzyme
+  - inverse problems
+  - dynamical systems
+references:
+  - type: software
+    title: "Enzyme.jl: High-performance automatic differentiation for Julia"
+    repository-code: "https://github.com/EnzymeAD/Enzyme.jl"
+    authors:
+      - family-names: "Moses"
+        given-names: "William"
+  - type: software
+    title: "Optimisers.jl"
+    repository-code: "https://github.com/FluxML/Optimisers.jl"
+    authors:
+      - family-names: "Innes"
+        given-names: "Mike"

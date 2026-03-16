@@ -1,13 +1,27 @@
-# Ignore large and unnecessary files
-examples/test_cases_milan/coordinate_shifts_test.ipynb
-examples/training_frames/*.png
-*.gif
-*.log
-*.tmp
-# Ignore Jupyter notebook checkpoints
+# Jupyter
 .ipynb_checkpoints/
-# Ignore OS and editor files
+
+# OS and editor
 .DS_Store
 *.swp
 *.swo
 *~
+
+# Generated / large binary artifacts
+*.gif
+*.log
+*.tmp
+*.pb.gz
+profile.pb.gz
+summary.txt
+summary_better.txt
+summary_climate.txt
+debug_train.jl
+
+# Julia local depot and profiling caches
+.julia_depot/
+statprof/
+
+# Legacy ignore entries (kept for compatibility)
+examples/test_cases_milan/coordinate_shifts_test.ipynb
+examples/training_frames/*.png
