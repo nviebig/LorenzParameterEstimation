@@ -12,6 +12,9 @@
 *.log
 *.tmp
 *.pb.gz
+*.png
+*.pdf
+*.svg
 profile.pb.gz
 summary.txt
 summary_better.txt
