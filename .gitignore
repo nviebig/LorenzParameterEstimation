@@ -16,7 +16,6 @@
 *.png
 *.pdf
 *.svg
-profile.pb.gz
 summary.txt
 summary_better.txt
 summary_climate.txt
@@ -26,7 +25,3 @@ Manifest.toml
 # Julia local depot and profiling caches
 .julia_depot/
 statprof/
-
-# Legacy ignore entries (kept for compatibility)
-examples/test_cases_milan/coordinate_shifts_test.ipynb
-examples/training_frames/*.png

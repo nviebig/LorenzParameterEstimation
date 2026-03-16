@@ -20,7 +20,7 @@ $$
 \end{aligned}
 $$
 
-exhibits sensitive dependence on initial conditions. With Lyapunov exponent λ ≈ 0.9, trajectory errors grow as e^(λt), making the standard approach of differentiating through a full trajectory numerically intractable for parameter estimation: gradients become dominated by chaotic divergence rather than by the parameter signal. This package addresses that problem through two complementary approaches.
+exhibits sensitive dependence on initial conditions. With Lyapunov exponent λ ≈ 0.9, trajectory errors grow as $e^{\lambda t}$, making the standard approach of differentiating through a full trajectory numerically intractable for parameter estimation: gradients become dominated by chaotic divergence rather than by the parameter signal. This package addresses that problem through two complementary approaches.
 
 ## Estimation Approaches
 
@@ -78,7 +78,7 @@ examples_climate/                 # statistics-based experiments (Jupyter notebo
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/nviebig/LorenzParameterEstimation.jl")
+Pkg.add(url="https://github.com/nviebig/LorenzParameterEstimation")
 ```
 
 For development:

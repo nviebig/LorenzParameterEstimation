@@ -14,10 +14,10 @@ authors:
   - family-names: "Viebig"
     given-names: "Niklas"
     email: niklasviebig@gmail.com
-repository-code: "https://github.com/nviebig/LorenzParameterEstimation.jl"
+repository-code: "https://github.com/nviebig/LorenzParameterEstimation"
 license: MIT
 version: "0.1.0"
-date-released: "2025-01-01"
+date-released: "2026-03-16"
 doi: "10.5281/zenodo.19052322"
 keywords:
   - lorenz-63

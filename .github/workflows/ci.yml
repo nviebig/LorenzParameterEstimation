@@ -30,11 +30,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - uses: julia-actions/setup-julia@v1
+    - uses: julia-actions/setup-julia@v2
       with:
         version: ${{ matrix.version }}
         
-    - uses: julia-actions/cache@v1
+    - uses: julia-actions/cache@v2
     
     - name: Install dependencies
       run: |
@@ -47,31 +47,10 @@ jobs:
     - uses: julia-actions/julia-processcoverage@v1
       if: matrix.version == '1.10' && matrix.os == 'ubuntu-latest'
       
-    - uses: codecov/codecov-action@v3
+    - uses: codecov/codecov-action@v4
       if: matrix.version == '1.10' && matrix.os == 'ubuntu-latest'
       with:
         file: lcov.info
-
-  documentation:
-    name: Documentation
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-    - uses: actions/checkout@v4
-    
-    - uses: julia-actions/setup-julia@v1
-      with:
-        version: '1.10'
-        
-    - name: Check for doc build capability
-      run: |
-        julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
-      continue-on-error: true
-      
-    - name: Build documentation
-      run: |
-        julia --project=docs docs/make.jl
-      continue-on-error: true
 
   benchmarks:
     name: Benchmarks
@@ -80,11 +59,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - uses: julia-actions/setup-julia@v1
+    - uses: julia-actions/setup-julia@v2
       with:
         version: '1.10'
         
-    - uses: julia-actions/cache@v1
+    - uses: julia-actions/cache@v2
     
     - name: Install dependencies
       run: |
@@ -98,7 +77,7 @@ jobs:
       
     - name: Upload benchmark results
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: benchmark-results
         path: benchmark-results.txt
@@ -110,11 +89,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - uses: julia-actions/setup-julia@v1
+    - uses: julia-actions/setup-julia@v2
       with:
         version: '1.10'
         
-    - uses: julia-actions/cache@v1
+    - uses: julia-actions/cache@v2
     
     - name: Install dependencies
       run: |
@@ -126,10 +105,6 @@ jobs:
         julia --project=. -e 'using LorenzParameterEstimation, Aqua; Aqua.test_all(LorenzParameterEstimation)'
       continue-on-error: true  # Don't fail CI for quality issues, just report
       
-    - name: Check for formatting issues
-      run: |
-        julia --project=. -e 'using JuliaFormatter; format(".", verbose=true, overwrite=false) || exit(1)'
-      continue-on-error: true
 
   compatibility:
     name: Compatibility Check
@@ -137,7 +112,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - uses: julia-actions/setup-julia@v1
+    - uses: julia-actions/setup-julia@v2
       with:
         version: '1.10'
         
@@ -158,11 +133,11 @@ jobs:
       with:
         fetch-depth: 0  # Fetch full history for comparison
     
-    - uses: julia-actions/setup-julia@v1
+    - uses: julia-actions/setup-julia@v2
       with:
         version: '1.10'
         
-    - uses: julia-actions/cache@v1
+    - uses: julia-actions/cache@v2
     
     - name: Install dependencies
       run: |
