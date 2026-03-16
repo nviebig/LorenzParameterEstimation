@@ -9,6 +9,7 @@
 
 # Generated / large binary artifacts
 *.gif
+!examples_weather/basic_training/lorenz_training_evolution.gif
 *.log
 *.tmp
 *.pb.gz

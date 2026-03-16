@@ -4,6 +4,8 @@
 [![Julia](https://img.shields.io/badge/julia-v1.9+-blue.svg)](https://julialang.org)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19052322.svg)](https://doi.org/10.5281/zenodo.19052322)
 
+![Parameter estimation training evolution](examples_weather/basic_training/lorenz_training_evolution.gif)
+
 A Julia package for gradient-based parameter estimation in the Lorenz-63 chaotic dynamical system. Developed as part of a master thesis on gradient-based calibration of atmospheric models, this package serves as a methodological testbed for evaluating windowed-loss training strategies and automatic differentiation through chaotic ODE integrators, prior to application in a full general circulation model.
 
 ## Background
