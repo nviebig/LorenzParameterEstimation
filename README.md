@@ -12,11 +12,13 @@ A Julia package for gradient-based parameter estimation in the Lorenz-63 chaotic
 
 The Lorenz-63 system,
 
-```math
-dx/dt = σ(y - x)
-dy/dt = x(ρ - z) - y
-dz/dt = xy - βz
-```
+$$
+\begin{aligned}
+\dot{x} &= \sigma(y - x) \\
+\dot{y} &= x(\rho - z) - y \\
+\dot{z} &= xy - \beta z
+\end{aligned}
+$$
 
 exhibits sensitive dependence on initial conditions. With Lyapunov exponent λ ≈ 0.9, trajectory errors grow as e^(λt), making the standard approach of differentiating through a full trajectory numerically intractable for parameter estimation: gradients become dominated by chaotic divergence rather than by the parameter signal. This package addresses that problem through two complementary approaches.
 
