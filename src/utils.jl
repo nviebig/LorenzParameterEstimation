@@ -151,40 +151,6 @@ function generate_noisy_observations(solution::L63Solution{T}, noise_level::Real
     return L63Solution(solution.t, noisy_trajectory, solution.system)
 end
 
-"""
-    validation_split(solution::L63Solution, train_fraction::Real=0.8)
-
-Split solution into training and validation sets.
-"""
-function validation_split(solution::L63Solution{T}, train_fraction::Real=0.8) where {T}
-    n_total = length(solution)
-    n_train = Int(round(train_fraction * n_total))
-    
-    # Training set
-    train_t = solution.t[1:n_train]
-    train_u = solution.u[1:n_train, :]
-    train_system = L63System(
-        params=solution.system.params,
-        u0=solution.system.u0, 
-        tspan=(solution.t[1], solution.t[n_train]),
-        dt=solution.system.dt
-    )
-    train_solution = L63Solution(train_t, train_u, train_system)
-    
-    # Validation set  
-    val_t = solution.t[n_train+1:end]
-    val_u = solution.u[n_train+1:end, :]
-    val_system = L63System(
-        params=solution.system.params,
-        u0=solution.u[n_train+1, :],  # New initial condition
-        tspan=(solution.t[n_train+1], solution.t[end]),
-        dt=solution.system.dt
-    )
-    val_solution = L63Solution(val_t, val_u, val_system)
-    
-    return train_solution, val_solution
-end
-
 # ================================ Extended Parameter Utilities ================================
 
 """

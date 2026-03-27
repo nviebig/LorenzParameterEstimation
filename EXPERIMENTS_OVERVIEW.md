@@ -248,7 +248,6 @@ modular_train!(
     window_size = 150,
     stride = 75,                   # 50% overlap
     batch_size = 16,
-    train_fraction = 1,
     update_σ=true, update_ρ=true, update_β=true,
     update_x_s=true, update_y_s=true, update_z_s=true,
     update_θ=false,
@@ -418,7 +417,6 @@ modular_train!(base_params, sol_stretched_3_5;
     optimizer_config = adamw_config(lr=1e-2, wd=1e-4),
     loss_function = window_rmse,
     epochs = 1000, window_size = 150, stride = 75, batch_size = 16,
-    train_fraction = 0.7,
     update_θ = true,   # ALL OTHER PARAMS FROZEN
     update_σ=false, update_ρ=false, update_β=false,
     early_stopping_patience = 100
@@ -480,11 +478,10 @@ window_size = 300 points (= 1.5 time units = 1.67 Lyapunov times)
 stride = 150 points (50% overlap)
 batch_size = 4 windows
 Total windows: 65 (from T=50 trajectory)
-Training/validation split: 52 / 13 (80/20)
 ```
 
 **One epoch — step by step**:
-1. Shuffle training window indices
+1. Shuffle window indices
 2. Create mini-batches of 4 windows each (13 batches/epoch)
 3. For each batch, for each window:
    - Extract initial condition from target trajectory at window start

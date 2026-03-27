@@ -17,7 +17,6 @@
         config = L63TrainingConfig(
             epochs = 50,
             window_size = 100,
-            train_fraction = 0.8,
             verbose = false
         )
         

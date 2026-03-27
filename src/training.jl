@@ -22,9 +22,7 @@ trajectory-based parameter estimation. Instead of using independent data points,
 trajectory windows as training examples, computes gradients for each window, and averages them across batches 
 before parameter updates. This provides stable gradients and efficient computation for dynamical systems.
 
-**Note**: Training loss is computed as the average over all training windows per epoch. Validation loss is 
-computed every `eval_every` epochs and the last computed value is carried forward for epochs where validation 
-is not performed (to avoid gaps in loss history for plotting).
+**Note**: Training loss is computed as the average over all trajectory windows per epoch.
 
 This function automatically handles both classic (σ, ρ, β) and extended (x_s, y_s, z_s, θ) parameters.
 It provides:
@@ -46,10 +44,8 @@ It provides:
 - `window_size::Int=300`: Size of trajectory windows
 - `stride::Int=window_size÷2`: Stride between windows
 - `batch_size::Int=32`: Mini-batch size
-- `train_fraction::Real=0.8`: Fraction of data for training
 - `shuffle::Bool=true`: Shuffle training data
 - `verbose::Bool=true`: Print training progress
-- `eval_every::Int=10`: Evaluate every N epochs
 - `early_stopping_patience::Int=20`: Early stopping patience
 - `update_σ::Bool=true`: Whether to update σ parameter
 - `update_ρ::Bool=true`: Whether to update ρ parameter  
@@ -116,8 +112,7 @@ function modular_train!(
     stride::Union{Nothing, Int} = nothing,              # Stride between windows (default: window_size ÷ 2)
     batch_size::Int = 32,                               # Mini-batch size
     
-    # Data splitting
-    train_fraction::Real = 0.8,                         # Fraction of data for training (remaining for validation)
+    # Data ordering
     shuffle::Bool = true,                               # Shuffle training data
     
     # Parameter updates (classic parameters)
@@ -133,7 +128,6 @@ function modular_train!(
 
     # Training control
     verbose::Bool = true,                               # Print training progress
-    eval_every::Int = 1,                                # Evaluate every N epochs (on validation set)
     early_stopping_patience::Int = 20,                  # Early stopping patience (in epochs)
     early_stopping_min_delta::Real = 1e-6,              # Minimum change to qualify as improvement for early stopping
     
@@ -161,9 +155,7 @@ function modular_train!(
         Random.shuffle!(rng, indices)                   # Shuffle indices
     end
     
-    train_count = max(1, round(Int, train_fraction * n_windows)) # Ensure at least one training window
-    train_indices = window_starts[indices[1:train_count]]  # Training window start indices
-    val_indices = train_count < n_windows ? window_starts[indices[train_count + 1:end]] : Int[] # Validation window start indices
+    train_indices = window_starts[indices]               # Training window start indices
     
     # Initialize parameters as NamedTuple for Optimisers.jl
     # Wrap scalars in arrays to make them mutable for Optimisers.jl
@@ -181,14 +173,12 @@ function modular_train!(
     end
     
     # Training state
-    metrics_history = NamedTuple[]                                 # To store (epoch, train_loss, val_loss, params)
+    metrics_history = NamedTuple[]                                 # To store (epoch, train_loss, params)
     train_loss_history = T[]                                       # To store training loss per epoch
-    val_loss_history = Union{T, Missing}[]                         # To store validation loss per epoch
     param_history = L63Parameters{T}[params]                       # To store parameter history
     best_params = params                                           # Best parameters found                
     best_metric = convert(T, Inf)                                  # Best metric (lower is better)
     patience_counter = 0                                           # Early stopping counter
-    last_val_loss = missing                                        # Track last computed validation loss (start with missing)
     
     if verbose
         active_params = String[]
@@ -201,12 +191,12 @@ function modular_train!(
         update_θ && push!(active_params, "θ")
         
         println("   Optimizer: $(optimizer_config.name)")
-        println("   Data: $(length(train_indices)) train windows, $(length(val_indices)) val windows")
+        println("   Data: $(length(train_indices)) windows")
         println("   Window size: $window_size, stride: $stride_val")
         println("   Updating: $(join(active_params, ", "))")
         println()
-        println("Epoch │   Train    │    Val     │ Parameters")
-        println("──────┼────────────┼────────────┼────────────────────────────")
+        println("Epoch │   Train    │ Parameters")
+        println("──────┼────────────┼────────────────────────────")
     end
 
     # Training loop
@@ -317,25 +307,6 @@ function modular_train!(
 
         train_loss = epoch_loss / total_windows_processed  # Average training loss over all windows actually processed
 
-        # Validation phase
-        if !isempty(val_indices) && epoch % eval_every == 0                     # Only evaluate on validation set every eval_every epochs
-            val_total = zero(T)                                                 # Initialize validation loss                        
-            for window_start in val_indices                                     # Process each validation window               
-                current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
-                                                 ps.x_s[1], ps.y_s[1], ps.z_s[1], ps.θ[1])  # All 7 parameters
-                loss_val, _ = compute_gradients_extended(                       # Compute loss (ignore gradients)
-                    current_params,                                             # Current parameters
-                    target_solution,                                            # Target solution
-                    window_start,                                               # Window start
-                    window_size,                                                # Window size
-                    loss_function                                               # Loss function
-                )
-                val_total += loss_val                                           # Accumulate validation loss               
-            end
-            last_val_loss = val_total / length(val_indices)                    # Compute and store validation loss
-        end
-        val_loss = last_val_loss                                               # Use last computed validation loss (or missing for first epoch)
-        
         # Record metrics
         current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], ps.x_s[1], ps.y_s[1], ps.z_s[1], ps.θ[1])  # All 7 parameters
         
@@ -362,21 +333,18 @@ function modular_train!(
         
         push!(param_history, current_params)                                    # Store parameter history
         push!(train_loss_history, train_loss)                                   # Store training loss
-        push!(val_loss_history, val_loss)                                       # Store validation loss
 
         training_status = (                                                     # Record training status for this epoch
             epoch = epoch,                                                      # Current epoch
             train_loss = train_loss,                                            # Training loss
-            val_loss = val_loss,                                                # Validation loss (or missing)     
             params = current_params                                             # Current parameters      
         )
         
         push!(metrics_history, training_status)                                 # Store training status history
         
         # Update best model
-        metric_for_best = ismissing(val_loss) ? train_loss : val_loss           # Use validation loss if available, else training loss
-        if metric_for_best < best_metric - early_stopping_min_delta             # Improvement found
-            best_metric = metric_for_best                                       # Update best metric
+        if train_loss < best_metric - early_stopping_min_delta                  # Improvement found
+            best_metric = train_loss                                            # Update best metric
             best_params = current_params                                        # Update best parameters
             patience_counter = 0                                                # Reset patience counter
         else
@@ -385,7 +353,6 @@ function modular_train!(
         
         # Print progress
         if verbose
-            val_str = ismissing(val_loss) ? "    —     " : @sprintf("%10.6f", val_loss)
             param_str = ""
             if update_σ || update_ρ || update_β
                 param_str *= @sprintf("σ=%.3f,ρ=%.3f,β=%.3f", current_params.σ, current_params.ρ, current_params.β)
@@ -399,8 +366,8 @@ function modular_train!(
                 param_str *= @sprintf("θ=%.3f", current_params.θ)
             end
             
-            println(@sprintf("%5d │ %10.6f │ %s │ %s",
-                   epoch, train_loss, val_str, param_str))
+            println(@sprintf("%5d │ %10.6f │ %s",
+                   epoch, train_loss, param_str))
         end
         # Early stopping
         if patience_counter >= early_stopping_patience
@@ -425,7 +392,6 @@ function modular_train!(
         metrics_history = metrics_history,
         param_history = param_history,
         train_loss = train_loss_history,
-        val_loss = val_loss_history,
         optimizer_config = optimizer_config,
         loss_function = loss_function
     )
@@ -435,18 +401,17 @@ end
 
 function _print_training_header()
     println()
-    println("┌───────┬────────────┬────────────┬───────────┬───────────┬───────────┐")
-    println("│ Epoch │   Train    │    Val     │      σ    │      ρ    │      β    │")
-    println("├───────┼────────────┼────────────┼───────────┼───────────┼───────────┤")
+    println("┌───────┬────────────┬───────────┬───────────┬───────────┐")
+    println("│ Epoch │   Train    │      σ    │      ρ    │      β    │")
+    println("├───────┼────────────┼───────────┼───────────┼───────────┤")
 end
 
-function _print_training_row(epoch::Int, train_loss, val_loss, params::L63Parameters)
+function _print_training_row(epoch::Int, train_loss, params::L63Parameters)
     train_str = @sprintf("%10.6f", train_loss)
-    val_str = ismissing(val_loss) ? "    —     " : @sprintf("%10.6f", val_loss)
     σ_str = @sprintf("%9.4f", params.σ)
     ρ_str = @sprintf("%9.4f", params.ρ)
     β_str = @sprintf("%9.4f", params.β)
-    println(@sprintf("│ %5d │ %s │ %s │ %s │ %s │ %s │", epoch, train_str, val_str, σ_str, ρ_str, β_str))
+    println(@sprintf("│ %5d │ %s │ %s │ %s │ %s │", epoch, train_str, σ_str, ρ_str, β_str))
 end
 
 function _print_training_footer()
@@ -486,7 +451,7 @@ function train!(
     opt_state = Optimisers.setup(config.optimiser, ps)
     
     # Initialize tracking
-    metrics_history = NamedTuple{(:train, :validation), Tuple{T, Union{Missing, T}}}[]
+    metrics_history = NamedTuple{(:train,), Tuple{T}}[]
     param_history = L63Parameters{T}[]
     sizehint!(metrics_history, config.epochs)
     sizehint!(param_history, config.epochs + 1)
@@ -533,15 +498,12 @@ function train!(
         params = L63Parameters(ps.σ[1], ps.ρ[1], ps.β[1], params.x_s, params.y_s, params.z_s, params.θ)
         
         train_loss = loss_val
-        
-        # No validation phase since we're only using first window
-        val_loss = missing
-        
+
         # Record metrics
         current_params = L63Parameters{T}(ps.σ[1], ps.ρ[1], ps.β[1], 
                                          params.x_s, params.y_s, params.z_s, params.θ)
         push!(param_history, current_params)
-        push!(metrics_history, (train = train_loss, validation = val_loss))
+        push!(metrics_history, (train = train_loss,))
         
         # Update best model
         if train_loss < best_metric
@@ -550,7 +512,7 @@ function train!(
         end
         
         if config.verbose
-            _print_training_row(epoch, train_loss, val_loss, current_params)
+            _print_training_row(epoch, train_loss, current_params)
         end
     end
     
@@ -571,4 +533,3 @@ function estimate_parameters(target_solution::L63Solution{T}, initial_guess::L63
     best_params, metrics_history, param_history = train!(initial_guess, target_solution, config)
     return best_params, metrics_history, param_history
 end
-

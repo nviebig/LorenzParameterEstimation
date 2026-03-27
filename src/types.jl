@@ -202,10 +202,8 @@ struct L63TrainingConfig{T<:Real,O,F,R<:Random.AbstractRNG}
     batch_size::Int
     optimiser::O
     loss::F
-    train_fraction::Float64
     shuffle::Bool
     rng::R
-    eval_every::Int
     
     function L63TrainingConfig{T,O,F,R}(
         epochs::Int,
@@ -218,10 +216,8 @@ struct L63TrainingConfig{T<:Real,O,F,R<:Random.AbstractRNG}
         batch_size::Int,
         optimiser::O,
         loss::F,
-        train_fraction::Float64,
         shuffle::Bool,
-        rng::R,
-        eval_every::Int
+        rng::R
     ) where {T<:Real,O,F,R<:Random.AbstractRNG}
         epochs > 0 || throw(ArgumentError("Number of epochs must be positive"))
         η > 0 || throw(ArgumentError("Learning rate must be positive"))
@@ -229,10 +225,8 @@ struct L63TrainingConfig{T<:Real,O,F,R<:Random.AbstractRNG}
         stride > 0 || throw(ArgumentError("Stride must be positive"))
         clip_norm > 0 || throw(ArgumentError("Clip norm must be positive"))
         batch_size > 0 || throw(ArgumentError("Batch size must be positive"))
-        0 < train_fraction <= 1 || throw(ArgumentError("Train fraction must be in (0, 1]"))
-        eval_every > 0 || throw(ArgumentError("Evaluation interval must be positive"))
         new{T,O,F,R}(epochs, η, window_size, stride, clip_norm, update_mask, verbose,
-                     batch_size, optimiser, loss, train_fraction, shuffle, rng, eval_every)
+                     batch_size, optimiser, loss, shuffle, rng)
     end
 end
 
@@ -246,10 +240,8 @@ function L63TrainingConfig(;
     batch_size::Int = 16,
     optimiser = nothing,
     loss = nothing,
-    train_fraction::Real = 0.8,
     shuffle::Bool = true,
     rng::Union{Nothing, Random.AbstractRNG} = nothing,
-    eval_every::Int = 1,
     # Core parameters (backward compatible)
     update_σ::Bool = true,
     update_ρ::Bool = true, 
@@ -270,7 +262,6 @@ function L63TrainingConfig(;
         Optimisers.ClipNorm(T(clip_norm)),
         Optimisers.Descent(T(η))
     ) : optimiser
-    train_fraction_val = Float64(train_fraction)
     loss_fn = loss
 
     return L63TrainingConfig{T, typeof(opt), typeof(loss_fn), typeof(rng_val)}(
@@ -284,9 +275,7 @@ function L63TrainingConfig(;
         batch_size,
         opt,
         loss_fn,
-        train_fraction_val,
         shuffle,
-        rng_val,
-        eval_every
+        rng_val
     )
 end

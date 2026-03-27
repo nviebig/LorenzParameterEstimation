@@ -115,7 +115,6 @@
         config_default = L63TrainingConfig()
         @test config_default.epochs > 0
         @test config_default.window_size > 0
-        @test 0 < config_default.train_fraction < 1
         @test config_default.batch_size > 0
         
         # Custom configuration
@@ -123,7 +122,6 @@
             epochs = 100,
             η = 0.01,
             window_size = 200,
-            train_fraction = 0.7,
             batch_size = 32,
             shuffle = false,
             verbose = true
@@ -132,7 +130,6 @@
         @test config_custom.epochs == 100
         @test config_custom.η == 0.01
         @test config_custom.window_size == 200
-        @test config_custom.train_fraction == 0.7
         @test config_custom.batch_size == 32
         @test config_custom.shuffle == false
         @test config_custom.verbose == true
